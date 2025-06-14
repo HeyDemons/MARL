@@ -99,8 +99,8 @@ class Runner_QMIX_MPE:
                 done_n = np.array([done[agent] for agent in agent_list])
                 # --- 修改结束 ---
 
-                if r: 
-                    episode_reward += sum(r.values()) / len(r)
+                
+                episode_reward += r['agent_0']
 
                 if not evaluate:
                     episode_buffer['obs_n'][t] = obs_n
@@ -123,13 +123,13 @@ class Runner_QMIX_MPE:
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser("Hyperparameters Setting for QMIX in MPE environment")
-    parser.add_argument("--max_train_steps", type=int, default=int(3e6), help="Maximum number of training steps")
+    parser.add_argument("--max_train_steps", type=int, default=int(1e6), help="Maximum number of training steps")
     parser.add_argument("--episode_limit", type=int, default=25, help="Maximum number of steps per episode")
     parser.add_argument("--evaluate_freq", type=int, default=5000, help="Evaluate the policy every 'evaluate_freq' steps")
     parser.add_argument("--evaluate_times", type=int, default=3, help="Evaluate times")
     
     parser.add_argument("--buffer_size", type=int, default=5000, help="The capacity of the replay buffer")
-    parser.add_argument("--batch_size", type=int, default=32, help="Batch size")
+    parser.add_argument("--batch_size", type=int, default=128, help="Batch size")
     parser.add_argument("--train_freq_episode", type=int, default=5, help="Train the model every N episodes")
     parser.add_argument("--train_epochs", type=int, default=1, help="Number of epochs per training interval")
 
@@ -140,7 +140,7 @@ if __name__ == '__main__':
     parser.add_argument("--epsilon", type=float, default=1.0, help="Initial epsilon for exploration")
     parser.add_argument("--min_epsilon", type=float, default=0.05, help="Minimum epsilon")
     parser.add_argument("--grad_clip_norm", type=float, default=10.0, help="Gradient clip norm")
-    parser.add_argument("--target_update_freq", type=int, default=200, help="Frequency of updating the target network")
+    parser.add_argument("--target_update_freq", type=int, default=500, help="Frequency of updating the target network")
 
     parser.add_argument('--render_mode', type=str, default='None', help="Render mode")
     
