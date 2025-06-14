@@ -2,13 +2,14 @@ from pettingzoo.mpe import simple_tag_v3, simple_adversary_v3, simple_spread_v3
 from agent.maddpg.maddpg_agent import MADDPG
 from agent.masac.masac_agent import MASAC
 from agent.matd3.matd3_agent import MATD3
+from agent.mappo.mappo_agent import MAPPO
 import torch
 import os
 import time
 from datetime import timedelta
 from utils.parameters import parameters
 from utils.logger import TrainingLogger
-from utils.runner import RUNNER
+from utils.runner import RUNNER, MAPPO_RUNNER
 
 def get_env(env_name, ep_len=25, render_mode ="None"):
     """create environment and get observation and action dimension of each agent in this environment"""
@@ -56,10 +57,16 @@ if __name__ == "__main__":
     elif args.algorithm == 'MATD3':
         print("using algorithm: MATD3")
         agent = MATD3(dim_info, args.buffer_capacity, args.batch_size, args.actor_lr, args.critic_lr, action_bound, _chkpt_dir = chkpt_dir, _device = device) 
+    elif args.algorithm == 'MAPPO':
+        print("using alogrthim: MAPPO")
+        agent = MAPPO(dim_info, args.buffer_capacity, args.batch_size, args.actor_lr, args.critic_lr, action_bound, _chkpt_dir = chkpt_dir, _device = device)
     else:
-        raise ValueError(f"Unsupported algorithm: {args.algorithm}. Please choose from 'MADDPG', 'MASAC', or 'MATD3'.")
+        raise ValueError(f"Unsupported algorithm: {args.algorithm}. Please choose from 'MADDPG', 'MASAC', 'MAPPO' or 'MATD3'.")
     # 创建运行对象
-    runner = RUNNER(agent, env, args, device, mode = 'train')
+    if args.algorithm == 'MAPPO':
+        runner = MAPPO_RUNNER(agent, env, args, device, mode = 'train')
+    else:
+        runner = RUNNER(agent, env, args, device, mode = 'train')
     runner.train()
     end_time = time.time()
     training_time = end_time - start_time

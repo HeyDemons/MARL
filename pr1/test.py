@@ -5,7 +5,7 @@ import numpy as np
 import imageio 
 from utils.parameters import parameters
 
-def get_env(env_name, ep_len=50, render_mode = "None"):
+def get_env(env_name, ep_len=200, render_mode = "None"):
     """create environment and get observation and action dimension of each agent in this environment"""
     new_env = None
     if env_name == 'simple_adversary_v3':
@@ -88,13 +88,13 @@ if __name__ == '__main__':
     current_dir = os.path.dirname(os.path.abspath(__file__))
     chkpt_dir = os.path.join(current_dir, 'models', args.env_name)
     # 加载模型的时间戳
-    load_timestamp = "2025-06-13_08-14"
+    load_timestamp = "2025-06-13_22-22"
     model_timestamp = None if load_timestamp == '' else load_timestamp
 
     
     # 设置为rgb_array模式以便捕获帧
     args.render_mode = "rgb_array"  # 修改为rgb_array以便捕获帧
-    args.episode_num = 3
+    args.episode_num = 1
 
     # 创建环境
     env, dim_info, action_bound = get_env(args.env_name, args.episode_length, args.render_mode)

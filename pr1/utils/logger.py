@@ -29,6 +29,7 @@ class TrainingLogger:
             "训练设备": str(device),
             "训练用时": training_duration,
             "环境名称": args.env_name,
+            "算法名称": args.algorithm,
             "渲染模式": args.render_mode,
             "总回合数": args.episode_num,
             "每回合步数": args.episode_length,

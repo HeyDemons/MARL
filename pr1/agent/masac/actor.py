@@ -25,9 +25,10 @@ class Actor(nn.Module):
 
     @staticmethod
     def init(m):
-        '''初始化模块参数'''
+        '''init patameters of the module'''
+        gain = nn.init.calculate_gain('relu')
         if isinstance(m, nn.Linear):
-            nn.init.xavier_uniform_(m.weight)
+            nn.init.xavier_uniform_(m.weight, gain = gain)  #使用了 Xavier 均匀分布初始化（也叫 Glorot 初始化）
             m.bias.data.fill_(0.01)
 
     def forward(self, x):

@@ -60,7 +60,7 @@ class RUNNER:
         # 记录每个智能体在每个episode的奖励
         self.episode_rewards = {agent_id: np.zeros(self.par.episode_num) for agent_id in self.env.agents}
         # episode循环
-        for episode in tqdm.tqdm(range(self.par.episode_num), desc='Training Progress', ncols=150):
+        for episode in tqdm.tqdm(range(self.par.episode_num), desc='Training Progress', ncols=110):
             # print(f"This is episode {episode}")
             # 初始化环境 返回初始状态 为一个字典 键为智能体名字 即env.agents中的内容，内容为对应智能体的状态
             obs, _ = self.env.reset()
@@ -268,3 +268,108 @@ class RUNNER:
 
             sum_reward = sum(agent_reward.values())
             self.reward_sum_record.append(sum_reward)
+
+
+class MAPPO_RUNNER:
+    def __init__(self, agent, env, par, device, mode='train'):
+        self.agent = agent
+        self.env = env
+        self.par = par
+        self.env_agents = list(self.agent.agents.keys())
+        
+        # Reward recording attributes
+        self.reward_sum_record = []
+        self.all_reward_record = []
+        self.all_adversary_avg_rewards = []
+        self.all_sum_rewards = []
+        
+        if mode == 'train' and self.par.visdom:
+            self.viz = visdom.Visdom()
+            self.viz.close()
+
+    def train(self):
+        for episode in tqdm.tqdm(range(self.par.episode_num), desc='Training Progress', ncols=100):
+            obs, _ = self.env.reset()
+            agent_reward = {agent_id: 0 for agent_id in self.env_agents}
+
+            # This loop is the data collection phase (rollout)
+            while self.env.agents:
+                # Select action using the current policy
+                action, log_probs, values = self.agent.select_action(obs)
+
+                next_obs, reward, terminated, truncated, info = self.env.step(action)
+                
+                done = {agent_id: bool(terminated.get(agent_id, False) or truncated.get(agent_id, False)) for agent_id in self.env_agents}
+
+                # Store the full experience tuple in the on-policy buffer
+                self.agent.add(obs, action, reward, done, log_probs, values)
+
+                for agent_id, r in reward.items():
+                    # Check if agent_id from reward dict is valid
+                    if agent_id in agent_reward:
+                        agent_reward[agent_id] += r
+                
+                obs = next_obs
+
+            # --- End of Rollout ---
+
+            # The learning step happens ONCE at the end of the episode
+            if episode >= self.par.learn_start_episode:
+                self.agent.learn()
+
+            # --- Logging and Visualization ---
+            sum_reward = sum(agent_reward.values())
+            self.log_rewards(episode, agent_reward, sum_reward)
+
+        self.save_rewards_to_csv(self.all_adversary_avg_rewards, self.all_sum_rewards)
+
+    def evaluate(self):
+        for episode in range(self.par.episode_num):
+            print(f"评估第 {episode + 1} 回合")
+            obs, _ = self.env.reset()
+            
+            while self.env.agents:
+                # For evaluation, we only need the action
+                action, _, _ = self.agent.select_action(obs)
+                next_obs, reward, terminated, truncated, info = self.env.step(action)
+                obs = next_obs
+        print("Evaluation finished.")
+
+    def log_rewards(self, episode, agent_reward, sum_reward):
+        """Helper function for logging and plotting rewards."""
+        self.all_sum_rewards.append(sum_reward)
+        self.reward_sum_record.append(sum_reward)
+
+        adversary_rewards_list = [r for agent_id, r in agent_reward.items() if agent_id.startswith('adversary_')]
+        avg_adversary_reward = np.mean(adversary_rewards_list) if adversary_rewards_list else 0
+        self.all_adversary_avg_rewards.append(avg_adversary_reward)
+
+        if self.par.visdom:
+            for agent_id, r in agent_reward.items():
+                self.viz.line(X=[episode + 1], Y=[r], win=f'reward_{agent_id}', opts={'title': f'Reward of {agent_id}'}, update='append')
+            self.viz.line(X=[episode + 1], Y=[sum_reward], win='Sum Reward', opts={'title': 'Sum Reward of All Agents'}, update='append')
+            self.viz.line(X=[episode + 1], Y=[avg_adversary_reward], win='Adversary Avg Reward', opts={'title': 'Average Reward of Adversaries'}, update='append')
+
+        if (episode + 1) % self.par.size_win == 0:
+            avg_win_reward = np.mean(self.reward_sum_record)
+            print(f'Episode {episode + 1}, Average Sum Reward (last {self.par.size_win}): {avg_win_reward:.2f}')
+            self.reward_sum_record = []
+
+    def save_rewards_to_csv(self, adversary_rewards, sum_rewards, filename=None):
+        timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M')
+        if filename is None:
+            filename = f"mappo_rewards_{timestamp}.csv"
+        
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        plot_dir = os.path.join(current_dir, '..', 'plot', 'data')
+        os.makedirs(plot_dir, exist_ok=True)
+        full_filename = os.path.join(plot_dir, filename)
+
+        header = ['Episode', 'Adversary Average Reward', 'Sum Reward of All Agents']
+        data = list(zip(range(1, len(adversary_rewards) + 1), adversary_rewards, sum_rewards))
+        
+        with open(full_filename, 'w', newline='') as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow(header)
+            writer.writerows(data)
+        print(f"Rewards data saved to {full_filename}")

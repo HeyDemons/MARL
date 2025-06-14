@@ -88,9 +88,12 @@ class MATD3():
                     
                     # 限制动作范围
                     min_action, max_action = a.actor.action_bound
-                    noisy_next_action = (next_action_tensor + noise).clamp(min_action, max_action)
+                    # 将numpy类型转换为tensor或标量，以适配clamp函数
+                    min_action_tensor = torch.tensor(min_action, device=self.device, dtype=torch.float32)
+                    max_action_tensor = torch.tensor(max_action, device=self.device, dtype=torch.float32)
+                    noisy_next_action = (next_action_tensor + noise).clamp(min_action_tensor, max_action_tensor)
                     next_act[id] = noisy_next_action
-
+                # 将当前智能体的动作替换为噪声后的动作
                 # 双评论家网络：计算两个目标Critic的值，并取较小者
                 next_target_critic_1_value = agent.target_critic_1_value(list(next_obs.values()), list(next_act.values()))
                 next_target_critic_2_value = agent.target_critic_2_value(list(next_obs.values()), list(next_act.values()))
