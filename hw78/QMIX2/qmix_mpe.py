@@ -163,15 +163,22 @@ class QMIX_MPE:
 
             q_target_t, target_hidden = self.target_agent_rnn(obs_next_t.reshape(-1, self.obs_dim), target_hidden.reshape(-1, self.args.rnn_hidden_dim))
             q_target_t = q_target_t.view(batch_size, self.N, -1)
-            
+            # 1. 使用评估网络选择下一个状态的最佳动作
+            q_eval_next_t, _ = self.eval_agent_rnn(obs_next_t.reshape(-1, self.obs_dim), eval_hidden.reshape(-1, self.args.rnn_hidden_dim))
+            q_eval_next_t = q_eval_next_t.view(batch_size, self.N, -1)
+            next_actions = q_eval_next_t.argmax(dim=2, keepdim=True) # shape: (batch_size, N, 1)
+
+            # 2. 使用目标网络获取这些动作对应的Q值
+            q_target_next = q_target_t.gather(2, next_actions).squeeze(2) # shape: (batch_size, N)
             q_evals.append(self.eval_qmixer(q_eval_t_action, s_t))
-            q_targets.append(self.target_qmixer(q_target_t.max(dim=2)[0], s_next_t))
+            q_targets.append(self.target_qmixer(q_target_next, s_next_t))
 
         q_evals = torch.stack(q_evals, dim=1).squeeze()
         q_targets = torch.stack(q_targets, dim=1).squeeze()
-
+        rewards_for_loss = r_n.mean(dim=-1)  # Use mean reward for loss calculation
+        dones_for_loss = done_n.all(dim=-1).float()  # Use all agents' done states for loss calculation
         # TD Target
-        y = r_n.mean(dim=-1) + self.args.gamma * (1 - done_n.mean(dim=-1)) * q_targets
+        y = rewards_for_loss + self.args.gamma * q_targets * (1 - dones_for_loss)
         
         loss = F.mse_loss(q_evals, y.detach())
         
