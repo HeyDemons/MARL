@@ -141,7 +141,7 @@ def different_plot_rewards(csv_file, window_size=50, alpha=0.1,time=None):
     
     plt.show()
 
-train_time = '2025-06-14_02-08'
+train_time = '2025-06-14_16-08'
 if __name__ == "__main__":
     # CSV文件路径（相对于当前脚本的路径）
     csv_file = os.path.join(os.path.dirname(__file__), 'data', 'data_rewards_{}.csv'.format(train_time))

@@ -88,7 +88,7 @@ if __name__ == '__main__':
     current_dir = os.path.dirname(os.path.abspath(__file__))
     chkpt_dir = os.path.join(current_dir, 'models', args.env_name)
     # 加载模型的时间戳
-    load_timestamp = "2025-06-13_22-22"
+    load_timestamp = "2025-06-14_16-08"
     model_timestamp = None if load_timestamp == '' else load_timestamp
 
     
