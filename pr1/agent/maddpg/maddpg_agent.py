@@ -32,7 +32,6 @@ class MADDPG():
         self.batch_size = batch_size
 
     def add(self, obs, action, reward, next_obs, done):
-        #NOTE that the experience is a dict with agent name as its key
         for agent_id in obs.keys():
             o = obs[agent_id]
             a = action[agent_id]

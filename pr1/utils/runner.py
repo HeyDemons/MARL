@@ -18,6 +18,7 @@ class RUNNER:
         self.reward_sum_record = []  # 用于平滑的奖励记录
         self.all_reward_record = []  # 保存所有奖励记录，用于最终统计
         self.all_adversary_avg_rewards = []  # 追捕者平均奖励
+        self.all_good_agent_avg_rewards = []  # 逃跑者平均奖励
         self.all_sum_rewards = []  # 所有智能体总奖励
         self.episode_rewards = {}  # 每个智能体的奖励历史
 
@@ -95,6 +96,8 @@ class RUNNER:
                     # # 学习
                     self.agent.learn(self.par.batch_size, self.par.gamma)
                     # 更新网络
+                if step >= self.par.random_steps and step % self.par.update_interval == 0:
+                    # 更新目标网络
                     self.agent.update_target(self.par.tau)
                 # 状态更新
                 obs = next_obs
@@ -113,11 +116,16 @@ class RUNNER:
                 agent_x:逃跑者
             '''# 绘制追捕者在当前episode的奖励和
             adversary_rewards_list = []
+            good_agent_rewards_list = []
             for agent_id, r in agent_reward.items():
                 if agent_id.startswith('adversary_'):        
                     adversary_rewards_list.append(r)
+                if agent_id.startswith('agent_'):
+                    good_agent_rewards_list.append(r)
             # 计算围捕者的平均奖励
             avg_adversary_reward  =  np.mean(adversary_rewards_list)
+            # 计算逃跑者的平均奖励
+            avg_good_agent_reward = np.mean(good_agent_rewards_list)
             if self.par.visdom:
                 self.viz.line(X=[episode + 1], Y=[avg_adversary_reward], win='adversary average reward',
                          opts={'title': 'Average reward of adversaries'},
@@ -125,7 +133,7 @@ class RUNNER:
                 
             # 记录当前episode围捕者的平均奖励
             self.all_adversary_avg_rewards.append(avg_adversary_reward)
-
+            self.all_good_agent_avg_rewards.append(avg_good_agent_reward)
             # 绘制所有智能体在当前episode的和奖励
             if self.par.visdom:
                 self.viz.line(X=[episode + 1], Y=[sum_reward], win='Sum reward of all agents',
@@ -160,7 +168,7 @@ class RUNNER:
                 self.reward_sum_record = []
 
         # 保存数据到文件（CSV格式）
-        self.save_rewards_to_csv(self.all_adversary_avg_rewards, self.all_sum_rewards)
+        self.save_rewards_to_csv(self.all_adversary_avg_rewards, self.all_good_agent_avg_rewards, self.all_sum_rewards)
 
     def get_running_reward(self, arr):
 
@@ -171,11 +179,6 @@ class RUNNER:
         window = self.par.size_win
         running_reward = np.zeros_like(arr)
 
-        # for i in range(window - 1):
-        #     running_reward[i] = np.mean(arr[:i + 1])
-        # for i in range(window - 1, len(arr)):
-        #     running_reward[i] = np.mean(arr[i - window + 1:i + 1])
-            # 确保不会访问超出数组范围的位置
         for i in range(len(arr)):
             # 对每个i，确保窗口大小不会超出数组的实际大小
             start_idx = max(0, i - window + 1)
@@ -199,7 +202,7 @@ class RUNNER:
         return sma_rewards
     
     """保存围捕者平均奖励和所有智能体总奖励到 CSV 文件"""
-    def save_rewards_to_csv(self, adversary_rewards, sum_rewards, filename = None): # filename="data_rewards.csv"
+    def save_rewards_to_csv(self, adversary_rewards, good_rewards, sum_rewards, filename = None): # filename="data_rewards.csv"
         # 获取当前时间戳
         timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M')
         if filename is None:
@@ -212,8 +215,8 @@ class RUNNER:
         # 构造完整的 CSV 文件路径
         full_filename = os.path.join(plot_dir, filename)
 
-        header = ['Episode', 'Adversary Average Reward', 'Sum Reward of All Agents']
-        data = list(zip(range(1, len(adversary_rewards) + 1), adversary_rewards, sum_rewards))
+        header = ['Episode', 'Adversary Average Reward', 'Good Average Reward', 'Sum Reward of All Agents']
+        data = list(zip(range(1, len(adversary_rewards) + 1), adversary_rewards, good_rewards, sum_rewards))
         # 将数据写入 CSV 文件
         with open(full_filename, 'w', newline='') as csvfile:
             writer = csv.writer(csvfile)

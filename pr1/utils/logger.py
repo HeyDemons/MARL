@@ -24,26 +24,14 @@ class TrainingLogger:
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         # 准备训练日志信息
+
         log_info = {
             "训练时间": current_time,
             "训练设备": str(device),
             "训练用时": training_duration,
-            "环境名称": args.env_name,
-            "算法名称": args.algorithm,
-            "渲染模式": args.render_mode,
-            "总回合数": args.episode_num,
-            "每回合步数": args.episode_length,
-            "学习间隔": args.learn_interval,
-            "随机步数": args.random_steps,
-            "tau": args.tau,
-            "gamma": args.gamma,
-            "buffer容量": args.buffer_capacity,
-            "batch_size": args.batch_size,
-            "actor学习率": args.actor_lr,
-            "critic学习率": args.critic_lr,
-            "是否使用visdom": args.visdom,
-            "visdom窗口大小": args.size_win
         }
+        args_dict = vars(args)
+        log_info.update(args_dict)
 
         # 保存训练日志
         log_file = os.path.join(self.log_dir, "training_log.json")

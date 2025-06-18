@@ -6,7 +6,7 @@ from train import Runner_MAPPO_MPE
 from PIL import Image
 
 rewardpath = './data_train/'
-resultpath = './result1/'
+resultpath = './result/'
 if not os.path.exists(resultpath):
     os.makedirs(resultpath)
 
@@ -36,8 +36,6 @@ parser.add_argument("--use_orthogonal_init", type=bool, default=True, help="Tric
 parser.add_argument("--set_adam_eps", type=float, default=True, help="Trick 9: set Adam epsilon=1e-5")
 parser.add_argument("--use_relu", type=float, default=False, help="Whether to use relu, if False, we will use tanh")
 parser.add_argument("--use_rnn", type=bool, default=False, help="Whether to use RNN")
-parser.add_argument("--add_agent_id", type=float, default=False,
-                    help="Whether to add agent_id. Here, we do not use it.")
 parser.add_argument("--use_value_clip", type=float, default=False, help="Whether to use value clip.")
 
 parser.add_argument('--reward_path', type=str,
@@ -59,7 +57,7 @@ if not os.path.exists(gif_dir):
     os.makedirs(gif_dir)
 gif_num = len([file for file in os.listdir(gif_dir)])  # current number of gif
 
-runner = Runner_MAPPO_MPE(args, env_name="simple_spread_v3", number=1, seed=0)
+runner = Runner_MAPPO_MPE(args, env_name="simple_spread_v3", number=1, seed=42)
 runner.agent_n.load_model("simple_spread_v3", number=1, seed=0, step=3000)
 
 agent_num = runner.env.num_agents

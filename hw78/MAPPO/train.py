@@ -57,23 +57,20 @@ class Runner_MAPPO_MPE:
         if self.args.use_reward_norm:
             print("------use reward norm------")
             self.reward_norm = Normalization(shape=self.args.N)
-        elif self.args.use_reward_scaling:
-            print("------use reward scaling------")
-            self.reward_scaling = RewardScaling(shape=self.args.N, gamma=self.args.gamma)
 
     def run(self, ):
         while self.total_steps < self.args.max_train_steps:
-            if self.total_steps % self.args.evaluate_freq == 0:
-                self.evaluate_policy()  # Evaluate the policy every 'evaluate_freq' steps
 
-            _, episode_steps = self.run_episode_mpe()  # Run an episode
+            episode_reward, episode_steps = self.run_episode_mpe()  # Run an episode
             self.total_steps += episode_steps
-
+            self.writer.add_scalar('train_episode_rewards_{}'.format(self.env_name), episode_reward,
+                                   global_step=self.total_steps)
             if self.replay_buffer.episode_num == self.args.batch_size:
                 self.agent_n.train(self.replay_buffer, self.total_steps)  # Training
                 self.replay_buffer.reset_buffer()
-
-        self.evaluate_policy()
+            if self.total_steps % self.args.evaluate_freq == 0:
+                print("total_steps: {}, episode_reward: {}".format(self.total_steps, episode_reward))
+                self.evaluate_policy()
         self.env.close()
 
     def evaluate_policy(self):
@@ -100,11 +97,6 @@ class Runner_MAPPO_MPE:
         observations, infos = self.env.reset()
 
         obs_n = np.array([observations[agent] for agent in observations.keys()])
-        if self.args.use_reward_scaling:
-            self.reward_scaling.reset()
-        if self.args.use_rnn:  # If you use RNN, before the beginning of each episode，reset the rnn_hidden of the Q network.
-            self.agent_n.actor.rnn_hidden = None
-            self.agent_n.critic.rnn_hidden = None
         for episode_step in range(self.args.episode_limit):
             a_n, a_logprob_n = self.agent_n.choose_action(obs_n,
                                                           evaluate=evaluate)  # Get actions and the corresponding log probabilities of N agents
@@ -124,8 +116,6 @@ class Runner_MAPPO_MPE:
             if not evaluate:
                 if self.args.use_reward_norm:
                     r_n = self.reward_norm(r_n)
-                elif args.use_reward_scaling:
-                    r_n = self.reward_scaling(r_n)
 
                 # Store the transition
                 self.replay_buffer.store_transition(episode_step, obs_n, s, v_n, a_n, a_logprob_n, r_n, done_n)
@@ -144,40 +134,28 @@ class Runner_MAPPO_MPE:
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser("Hyperparameters Setting for MAPPO in MPE environment")
-    parser.add_argument("--max_train_steps", type=int, default=int(3e6), help=" Maximum number of training steps")
-    parser.add_argument("--episode_limit", type=int, default=25, help="Maximum number of steps per episode")
-    parser.add_argument("--evaluate_freq", type=float, default=int(5e3),
-                        help="Evaluate the policy every 'evaluate_freq' steps")
-    parser.add_argument("--evaluate_times", type=float, default=3, help="Evaluate times")
-
-    parser.add_argument("--batch_size", type=int, default=32, help="Batch size (the number of episodes)")
-    parser.add_argument("--mini_batch_size", type=int, default=8, help="Minibatch size (the number of episodes)")
-    parser.add_argument("--rnn_hidden_dim", type=int, default=64,
-                        help="The number of neurons in hidden layers of the rnn")
-    parser.add_argument("--mlp_hidden_dim", type=int, default=64,
-                        help="The number of neurons in hidden layers of the mlp")
+    parser = argparse.ArgumentParser("MAPPO Hyperparameters for MPE")
+    parser.add_argument("--max_train_steps", type=int, default=int(3e6), help="Max training steps")
+    parser.add_argument("--episode_limit", type=int, default=25, help="Max steps per episode")
+    parser.add_argument("--evaluate_freq", type=float, default=int(5e3), help="Evaluation frequency")
+    parser.add_argument("--evaluate_times", type=float, default=3, help="Evaluation runs")
+    parser.add_argument("--batch_size", type=int, default=32, help="Batch size")
+    parser.add_argument("--mini_batch_size", type=int, default=8, help="Minibatch size")
+    parser.add_argument("--rnn_hidden_dim", type=int, default=64, help="RNN hidden size")
+    parser.add_argument("--mlp_hidden_dim", type=int, default=64, help="MLP hidden size")
     parser.add_argument("--lr", type=float, default=5e-4, help="Learning rate")
     parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor")
-    parser.add_argument("--lamda", type=float, default=0.95, help="GAE parameter")
-    parser.add_argument("--epsilon", type=float, default=0.2, help="GAE parameter")
-    parser.add_argument("--K_epochs", type=int, default=15, help="GAE parameter")
-    parser.add_argument("--use_adv_norm", type=bool, default=True, help="Trick 1:advantage normalization")
-    parser.add_argument("--use_reward_norm", type=bool, default=True, help="Trick 3:reward normalization")
-    parser.add_argument("--use_reward_scaling", type=bool, default=False,
-                        help="Trick 4:reward scaling. Here, we do not use it.")
-    parser.add_argument("--entropy_coef", type=float, default=0.01, help="Trick 5: policy entropy")
-    parser.add_argument("--use_lr_decay", type=bool, default=True, help="Trick 6:learning rate Decay")
-    parser.add_argument("--use_grad_clip", type=bool, default=True, help="Trick 7: Gradient clip")
-    parser.add_argument("--use_orthogonal_init", type=bool, default=True, help="Trick 8: orthogonal initialization")
-    parser.add_argument("--set_adam_eps", type=float, default=True, help="Trick 9: set Adam epsilon=1e-5")
-    parser.add_argument("--use_relu", type=float, default=False, help="Whether to use relu, if False, we will use tanh")
-    parser.add_argument("--use_rnn", type=bool, default=False, help="Whether to use RNN")
-    parser.add_argument("--add_agent_id", type=float, default=False,
-                        help="Whether to add agent_id. Here, we do not use it.")
-    parser.add_argument("--use_value_clip", type=float, default=False, help="Whether to use value clip.")
-    parser.add_argument('--render_mode', type=str,
-                        default='None', help='File path to my result')
+    parser.add_argument("--lamda", type=float, default=0.95, help="GAE lambda")
+    parser.add_argument("--epsilon", type=float, default=0.2, help="PPO epsilon")
+    parser.add_argument("--K_epochs", type=int, default=15, help="PPO epochs")
+    parser.add_argument("--use_reward_norm", type=bool, default=True, help="Reward normalization")
+    parser.add_argument("--entropy_coef", type=float, default=0.01, help="Entropy coefficient")
+    parser.add_argument("--use_lr_decay", type=bool, default=True, help="LR decay")
+    parser.add_argument("--use_grad_clip", type=bool, default=True, help="Gradient clipping")
+    parser.add_argument("--use_orthogonal_init", type=bool, default=True, help="Orthogonal init")
+    parser.add_argument("--set_adam_eps", type=float, default=True, help="Adam epsilon")
+    parser.add_argument("--use_relu", type=float, default=False, help="Use relu (else tanh)")
+    parser.add_argument('--render_mode', type=str, default='None', help='Render mode')
 
     args = parser.parse_args()
     runner = Runner_MAPPO_MPE(args, env_name="simple_spread_v3", number=1, seed=0)

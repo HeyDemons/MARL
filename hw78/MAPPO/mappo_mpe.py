@@ -12,56 +12,7 @@ def orthogonal_init(layer, gain=1.0):
         elif 'weight' in name:
             nn.init.orthogonal_(param, gain=gain)
 
-# Actor 和 Critic 网络
-class Actor_RNN(nn.Module):
-    def __init__(self, args, actor_input_dim):
-        super(Actor_RNN, self).__init__()
-        self.rnn_hidden = None
-
-        self.fc1 = nn.Linear(actor_input_dim, args.rnn_hidden_dim)
-        self.rnn = nn.GRUCell(args.rnn_hidden_dim, args.rnn_hidden_dim)
-        self.fc2 = nn.Linear(args.rnn_hidden_dim, args.action_dim)
-        self.activate_func = [nn.Tanh(), nn.ReLU()][args.use_relu]
-
-        if args.use_orthogonal_init:
-            print("------use_orthogonal_init------")
-            orthogonal_init(self.fc1)
-            orthogonal_init(self.rnn)
-            orthogonal_init(self.fc2, gain=0.01)
-
-    def forward(self, actor_input):
-        # When 'choose_action': actor_input.shape=(N, actor_input_dim), prob.shape=(N, action_dim)
-        # When 'train':         actor_input.shape=(mini_batch_size*N, actor_input_dim),prob.shape=(mini_batch_size*N, action_dim)
-        x = self.activate_func(self.fc1(actor_input))
-        self.rnn_hidden = self.rnn(x, self.rnn_hidden)
-        prob = torch.softmax(self.fc2(self.rnn_hidden), dim=-1)
-        return prob
-
-
-class Critic_RNN(nn.Module):
-    def __init__(self, args, critic_input_dim):
-        super(Critic_RNN, self).__init__()
-        self.rnn_hidden = None
-
-        self.fc1 = nn.Linear(critic_input_dim, args.rnn_hidden_dim)
-        self.rnn = nn.GRUCell(args.rnn_hidden_dim, args.rnn_hidden_dim)
-        self.fc2 = nn.Linear(args.rnn_hidden_dim, 1)
-        self.activate_func = [nn.Tanh(), nn.ReLU()][args.use_relu]
-        if args.use_orthogonal_init:
-            print("------use_orthogonal_init------")
-            orthogonal_init(self.fc1)
-            orthogonal_init(self.rnn)
-            orthogonal_init(self.fc2)
-
-    def forward(self, critic_input):
-        # When 'get_value': critic_input.shape=(N, critic_input_dim), value.shape=(N, 1)
-        # When 'train':     critic_input.shape=(mini_batch_size*N, critic_input_dim), value.shape=(mini_batch_size*N, 1)
-        x = self.activate_func(self.fc1(critic_input))
-        self.rnn_hidden = self.rnn(x, self.rnn_hidden)
-        value = self.fc2(self.rnn_hidden)
-        return value
-
-
+# Actor and Critic networks for MAPPO in MPE (Multi-Agent Particle Environment)
 class Actor_MLP(nn.Module):
     def __init__(self, args, actor_input_dim):
         super(Actor_MLP, self).__init__()
@@ -125,53 +76,25 @@ class MAPPO_MPE:
         self.epsilon = args.epsilon
         self.K_epochs = args.K_epochs
         self.entropy_coef = args.entropy_coef
-        self.set_adam_eps = args.set_adam_eps
         self.use_grad_clip = args.use_grad_clip
         self.use_lr_decay = args.use_lr_decay
         self.use_adv_norm = args.use_adv_norm
-        self.use_rnn = args.use_rnn
-        self.add_agent_id = args.add_agent_id
-        self.use_value_clip = args.use_value_clip
 
         # get the input dimension of actor and critic
         self.actor_input_dim = args.obs_dim
         self.critic_input_dim = args.state_dim
-        if self.add_agent_id:
-            print("------add agent id------")
-            self.actor_input_dim += args.N
-            self.critic_input_dim += args.N
 
-        if self.use_rnn:
-            print("------use rnn------")
-            self.actor = Actor_RNN(args, self.actor_input_dim)
-            self.critic = Critic_RNN(args, self.critic_input_dim)
-        else:
-            self.actor = Actor_MLP(args, self.actor_input_dim)
-            self.critic = Critic_MLP(args, self.critic_input_dim)
+        self.actor = Actor_MLP(args, self.actor_input_dim)
+        self.critic = Critic_MLP(args, self.critic_input_dim)
 
         self.ac_parameters = list(self.actor.parameters()) + list(self.critic.parameters())
-        if self.set_adam_eps:
-            print("------set adam eps------")
-            self.ac_optimizer = torch.optim.Adam(self.ac_parameters, lr=self.lr, eps=1e-5)
-        else:
-            self.ac_optimizer = torch.optim.Adam(self.ac_parameters, lr=self.lr)
+        self.ac_optimizer = torch.optim.Adam(self.ac_parameters, lr=self.lr)
 
     def choose_action(self, obs_n, evaluate):
         with torch.no_grad():
             actor_inputs = []
             obs_n = torch.tensor(obs_n, dtype=torch.float32)  # obs_n.shape=(N，obs_dim)
             actor_inputs.append(obs_n)
-            if self.add_agent_id:
-                """
-                    Add an one-hot vector to represent the agent_id
-                    For example, if N=3
-                    [obs of agent_1]+[1,0,0]
-                    [obs of agent_2]+[0,1,0]
-                    [obs of agent_3]+[0,0,1]
-                    So, we need to concatenate a N*N unit matrix(torch.eye(N))
-                """
-                actor_inputs.append(torch.eye(self.N))
-
             actor_inputs = torch.cat([x for x in actor_inputs], dim=-1)  # actor_input.shape=(N, actor_input_dim)
             prob = self.actor(actor_inputs)  # prob.shape=(N,action_dim)
             if evaluate:  # When evaluating the policy, we select the action with the highest probability
@@ -189,8 +112,6 @@ class MAPPO_MPE:
             # Because each agent has the same global state, we need to repeat the global state 'N' times.
             s = torch.tensor(s, dtype=torch.float32).unsqueeze(0).repeat(self.N, 1)  # (state_dim,)-->(N,state_dim)
             critic_inputs.append(s)
-            if self.add_agent_id:  # Add an one-hot vector to represent the agent_id
-                critic_inputs.append(torch.eye(self.N))
             critic_inputs = torch.cat([x for x in critic_inputs], dim=-1)  # critic_input.shape=(N, critic_input_dim)
             v_n = self.critic(critic_inputs)  # v_n.shape(N,1)
             return v_n.numpy().flatten()
@@ -226,22 +147,9 @@ class MAPPO_MPE:
                     probs_now.shape=(mini_batch_size, episode_limit, N, action_dim)
                     values_now.shape=(mini_batch_size, episode_limit, N)
                 """
-                if self.use_rnn:
-                    # If use RNN, we need to reset the rnn_hidden of the actor and critic.
-                    self.actor.rnn_hidden = None
-                    self.critic.rnn_hidden = None
-                    probs_now, values_now = [], []
-                    for t in range(self.episode_limit):
-                        prob = self.actor(actor_inputs[index, t].reshape(self.mini_batch_size * self.N, -1)) # prob.shape=(mini_batch_size*N, action_dim)
-                        probs_now.append(prob.reshape(self.mini_batch_size, self.N, -1))  # prob.shape=(mini_batch_size,N,action_dim）
-                        v = self.critic(critic_inputs[index, t].reshape(self.mini_batch_size * self.N, -1))  # v.shape=(mini_batch_size*N,1)
-                        values_now.append(v.reshape(self.mini_batch_size, self.N))  # v.shape=(mini_batch_size,N)
-                    # Stack them according to the time (dim=1)
-                    probs_now = torch.stack(probs_now, dim=1)
-                    values_now = torch.stack(values_now, dim=1)
-                else:
-                    probs_now = self.actor(actor_inputs[index])
-                    values_now = self.critic(critic_inputs[index]).squeeze(-1)
+
+                probs_now = self.actor(actor_inputs[index])
+                values_now = self.critic(critic_inputs[index]).squeeze(-1)
 
                 dist_now = Categorical(probs_now)
                 dist_entropy = dist_now.entropy()  # dist_entropy.shape=(mini_batch_size, episode_limit, N)
@@ -252,14 +160,7 @@ class MAPPO_MPE:
                 surr1 = ratios * adv[index]
                 surr2 = torch.clamp(ratios, 1 - self.epsilon, 1 + self.epsilon) * adv[index]
                 actor_loss = -torch.min(surr1, surr2) - self.entropy_coef * dist_entropy
-
-                if self.use_value_clip:
-                    values_old = batch["v_n"][index, :-1].detach()
-                    values_error_clip = torch.clamp(values_now - values_old, -self.epsilon, self.epsilon) + values_old - v_target[index]
-                    values_error_original = values_now - v_target[index]
-                    critic_loss = torch.max(values_error_clip ** 2, values_error_original ** 2)
-                else:
-                    critic_loss = (values_now - v_target[index]) ** 2
+                critic_loss = (values_now - v_target[index]) ** 2
 
                 self.ac_optimizer.zero_grad()
                 ac_loss = actor_loss.mean() + critic_loss.mean()
@@ -281,12 +182,6 @@ class MAPPO_MPE:
         actor_inputs, critic_inputs = [], []
         actor_inputs.append(batch['obs_n'])
         critic_inputs.append(batch['s'].unsqueeze(2).repeat(1, 1, self.N, 1))
-        if self.add_agent_id:
-            # agent_id_one_hot.shape=(mini_batch_size, max_episode_len, N, N)
-            agent_id_one_hot = torch.eye(self.N).unsqueeze(0).unsqueeze(0).repeat(self.batch_size, self.episode_limit, 1, 1)
-            actor_inputs.append(agent_id_one_hot)
-            critic_inputs.append(agent_id_one_hot)
-
         actor_inputs = torch.cat([x for x in actor_inputs], dim=-1)  # actor_inputs.shape=(batch_size, episode_limit, N, actor_input_dim)
         critic_inputs = torch.cat([x for x in critic_inputs], dim=-1)  # critic_inputs.shape=(batch_size, episode_limit, N, critic_input_dim)
         return actor_inputs, critic_inputs

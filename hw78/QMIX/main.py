@@ -1,5 +1,4 @@
 import torch
-import gym
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
@@ -7,111 +6,21 @@ import random
 from torch.utils.tensorboard import SummaryWriter
 import os
 from tqdm import tqdm
+from env import ParallelEnv, PettingZooWrapper
 import copy
-from multiprocessing import Process, Pipe
 from pettingzoo.mpe import simple_spread_v3
 import datetime
 import imageio
-
-# Set a dummy video driver to avoid display errors in headless environments
-os.environ['SDL_VIDEODRIVER'] = 'dummy'
-
-class EnvWrapper:
-    """A wrapper for the PettingZoo environment to handle dictionary-to-list conversions."""
-    def __init__(self, render_mode=None):
-        # Initialize the environment with a specified number of agents and max cycles
-        self.env = simple_spread_v3.parallel_env(N=3, max_cycles=25, local_ratio=0.5, render_mode=render_mode)
-        self.N = 3
-        self.observation_space = self.env.observation_space('agent_0')
-        self.action_space = self.env.action_space('agent_0')
-
-    def reset(self, seed=None):
-        """Resets the environment and returns observations and info as lists."""
-        obs, infos = self.env.reset(seed=seed)
-        return self.dict_to_list(obs)
-
-    def step(self, action):
-        """Takes a step in the environment and returns results as lists."""
-        obs, rewards, dones, tructs, infos = self.env.step(self.list_to_dict(action))
-        return self.dict_to_list(obs), self.dict_to_list(rewards), self.dict_to_list(dones), self.dict_to_list(tructs), self.dict_to_list(infos)
-    
-    def render(self):
-        """Renders the environment."""
-        return self.env.render()
-
-    def list_to_dict(self, data):
-        """Converts a list of agent data to a dictionary."""
-        return {f"agent_{i}": data[i] for i in range(self.N)}
-
-    def dict_to_list(self, data):
-        """Converts a dictionary of agent data to a list."""
-        return [data[f"agent_{i}"] for i in range(self.N)]
-
-    def close(self):
-        """Closes the environment."""
-        self.env.close()
-
-def worker(remote, parent_remote, env_fn_wrapper):
-    """Function for a worker process to run an environment instance."""
-    parent_remote.close()
-    env = env_fn_wrapper()
-    while True:
-        try:
-            cmd, data = remote.recv()
-            if cmd == 'step':
-                obs, reward, done, truct, info = env.step(data)
-                remote.send((obs, reward, done, truct, info))
-            elif cmd == 'reset':
-                obs = env.reset()
-                remote.send(obs)
-            elif cmd == 'close':
-                env.close()
-                remote.close()
-                break
-            else:
-                raise NotImplementedError
-        except EOFError:
-            break
+import warnings
+warnings.filterwarnings("ignore")
 
 
-class ParallelEnv:
-    """A class to manage multiple parallel environment instances."""
-    def __init__(self, n_envs):
-        self.n_envs = n_envs
-        self.remotes, self.work_remotes = zip(*[Pipe() for _ in range(n_envs)])
-        self.ps = [Process(target=worker, args=(work_remote, remote, EnvWrapper))
-                   for (work_remote, remote) in zip(self.work_remotes, self.remotes)]
-        for p in self.ps:
-            p.daemon = True
-            p.start()
-        for remote in self.work_remotes:
-            remote.close()
-
-    def sample_action(self):
-        """Samples a random action for each agent in each environment."""
-        return np.random.randint(0, 5, size=(self.n_envs, 3))
-
-    def step(self, actions):
-        """Steps all parallel environments with the given actions."""
-        for remote, action in zip(self.remotes, actions):
-            remote.send(('step', action))
-        results = [remote.recv() for remote in self.remotes]
-        obs, rewards, dones, tructs, infos = zip(*results)
-        return obs, rewards, dones, tructs, infos
-
-    def reset(self):
-        """Resets all parallel environments."""
-        for remote in self.remotes:
-            remote.send(('reset', None))
-        return [remote.recv() for remote in self.remotes]
-
-    def close(self):
-        """Closes all parallel environments and worker processes."""
-        for remote in self.remotes:
-            remote.send(('close', None))
-        for p in self.ps:
-            p.join()
-
+def orthogonal_init(layer, gain=1.0):
+    for name, param in layer.named_parameters():
+        if 'bias' in name:
+            nn.init.constant_(param, 0)
+        elif 'weight' in name:
+            nn.init.orthogonal_(param, gain=gain)
 
 class Replay:
     """A simple replay buffer for storing and sampling transitions."""
@@ -147,11 +56,15 @@ class RNN(nn.Module):
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
         self.norm2 = nn.LayerNorm(hidden_dim)
         self.fc3 = nn.Linear(hidden_dim, output_dim)
-
+        self.fc = nn.Linear(hidden_dim, hidden_dim)
+        orthogonal_init(self.fc1)
+        orthogonal_init(self.fc2)
+        orthogonal_init(self.fc3,gain=0.01)
     def forward(self, inputs):
         """Forward pass through the network."""
-        x = self.norm1(F.relu(self.fc1(inputs)))
-        x = self.norm2(F.relu(self.fc2(x)))
+        x = self.norm1(F.tanh(self.fc1(inputs)))
+        x = self.norm2(F.tanh(self.fc2(x)))
+        x = F.tanh(self.fc(x))
         return self.fc3(x)
 
 
@@ -163,7 +76,9 @@ class Qmix(nn.Module):
         self.hyper_b1 = nn.Sequential(nn.Linear(state_dim, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, 1))
         # Use Softplus to ensure weights are non-negative
         self.trans_fn = nn.Softplus(beta=1, threshold=20)
-
+        orthogonal_init(self.hyper_w1)
+        orthogonal_init(self.hyper_b1)
+        
     def forward(self, qs, states):
         """Forward pass for the mixing network."""
         weight = self.trans_fn(self.hyper_w1(states))
@@ -171,9 +86,10 @@ class Qmix(nn.Module):
         return torch.sum(weight * qs, dim=-1, keepdim=True) + bias
 
 
+
 class QmixAgent:
     """The main agent class that manages the networks, training, and actions."""
-    def __init__(self, state_dim, action_dim, hidden_dim, num_agent, num_env, q_net_lr, qmix_lr, gamma, explore_rate, explore_rate_decay, min_explore_rate, update_gap, device):
+    def __init__(self, state_dim, action_dim, hidden_dim, num_agent, num_env, q_net_lr, qmix_lr, gamma, explore_rate, min_explore_rate, update_gap, device):
         self.q_net = RNN(state_dim + action_dim, hidden_dim, action_dim).to(device)
         self.qmix = Qmix(state_dim * num_agent, hidden_dim, num_agent).to(device)
         self.target_q_net = copy.deepcopy(self.q_net)
@@ -186,7 +102,6 @@ class QmixAgent:
         self.num_agent = num_agent
         self.num_env = num_env
         self.explore_rate = explore_rate
-        self.explore_rate_decay = explore_rate_decay
         self.min_explore_rate = min_explore_rate
         self.device = device
         self.episode_len = 25
@@ -260,7 +175,6 @@ class QmixAgent:
         if self.update_step % self.update_gap == 0:
             self.copy_target()
             
-        self.explore_rate = max(self.min_explore_rate, self.explore_rate * self.explore_rate_decay)
         return loss.item(), self.explore_rate
 
     def copy_target(self):
@@ -290,18 +204,20 @@ def train_off_policy_agent(env, agent, replay, num_episodes, update_iter, log_di
     best_avg_return = -np.inf
     model_dir = os.path.join(log_dir, 'models')
 
+    # 计算线性递减的步长
+    epsilon_decay_step = (agent.explore_rate - agent.min_explore_rate) / (num_episodes * 0.9)
+
     with tqdm(total=num_episodes, desc='Training Episodes') as pbar:
         for i_episode in range(num_episodes):
             episode_return = 0
             state = env.reset()
-            prev_action = env.sample_action()
+            prev_action = [[env.action_space.sample() for _ in range(agent.num_agent)] for _ in range(agent.num_env)]
             
             transition_dict = {'states': [], 'prev_actions': [], 'actions': [], 'next_states': [], 'rewards': [], 'dones': []}
             
             for _ in range(agent.episode_len):
                 action = agent.take_action(state, prev_action)
                 next_state, reward, _, truct, _ = env.step(action)
-                
                 transition_dict['states'].append(state)
                 transition_dict['prev_actions'].append(prev_action)
                 transition_dict['actions'].append(action)
@@ -311,7 +227,7 @@ def train_off_policy_agent(env, agent, replay, num_episodes, update_iter, log_di
                 
                 state = next_state
                 prev_action = action
-                episode_return += np.array(reward).sum() / len(reward)
+                episode_return += np.array(reward).sum() / len(reward) 
 
             for key, value in transition_dict.items():
                 transition_dict[key] = np.array(value).swapaxes(0, 1)
@@ -322,13 +238,12 @@ def train_off_policy_agent(env, agent, replay, num_episodes, update_iter, log_di
                 for _ in range(update_iter):
                     states, prev_actions, actions, rewards, next_states, dones = replay.sample()
                     loss, explore_rate = agent.update(states, prev_actions, actions, rewards, next_states, dones)
-                
-                writer.add_scalar('Metrics/Loss', loss, i_eps)
-                writer.add_scalar('Metrics/Explore Rate', explore_rate, i_eps)
-                writer.add_scalar('Rewards/Individual Reward', np.array(transition_dict['rewards']).mean(), i_eps)
-
-            return_list.append(episode_return)
+                    writer.add_scalar('Metrics/Loss', loss, i_eps)
+                    writer.add_scalar('Metrics/Explore Rate', explore_rate, i_eps)
+        
             writer.add_scalar('Rewards/Episode Return', episode_return, i_eps)
+            writer.add_scalar('Rewards/Individual Reward', episode_return / agent.num_agent, i_eps)
+            return_list.append(episode_return)
             i_eps += 1
             
             current_avg_return = np.mean(return_list[-100:]) if len(return_list) > 0 else 0.0
@@ -337,118 +252,141 @@ def train_off_policy_agent(env, agent, replay, num_episodes, update_iter, log_di
                 best_avg_return = current_avg_return
                 agent.save(model_dir, 'best')
                 writer.add_scalar('Rewards/Best Average Return', best_avg_return, i_eps)
+            
+            # 更新 epsilon，线性递减
+            if agent.explore_rate > agent.min_explore_rate:
+                agent.explore_rate -= epsilon_decay_step
+                agent.explore_rate = max(agent.explore_rate, agent.min_explore_rate)
 
-            pbar.set_postfix({'episode': i_eps,
-                              'avg_return': f'{current_avg_return:.3f}',
-                              'explore': f'{agent.explore_rate:.3f}',
-                              'loss': f'{loss:.3f}'})
+            pbar.set_postfix({'epi': i_eps,
+                              'avg_r': f'{current_avg_return:.3f}',
+                              'eps': f'{agent.explore_rate:.3f}',
+                              'l': f'{loss:.3f}'})
             pbar.update(1)
     
     agent.save(model_dir, 'final')
     env.close()
+    writer.close()
     return return_list, model_dir
 
-def evaluate_and_record(agent_params, model_path, model_identifier, video_path):
-    """Evaluates the trained agent and records a video of its performance."""
-    print(f"Starting evaluation for model: {model_identifier}")
-    eval_env = EnvWrapper(render_mode='rgb_array')
+def evaluate_and_record(agent_params, model_path, model_identifier, video_dir, num_evaluations=3):
+    """Evaluates the trained agent multiple times and records videos of its performance."""
+    print(f"Starting evaluation for model: {model_identifier} ({num_evaluations} episodes)")
+    
+    # 使用新的 PettingZooWrapper 来创建用于评估的单个环境
+    num_agent_eval = agent_params['num_agent']
+    eval_env_creator = lambda: simple_spread_v3.parallel_env(N=num_agent_eval, max_cycles=25, local_ratio=0.5, render_mode='rgb_array')
+    eval_env = PettingZooWrapper(eval_env_creator)
+
     agent = QmixAgent(**agent_params)
     agent.load(model_path, model_identifier)
 
-    if not os.path.exists(os.path.dirname(video_path)):
-        os.makedirs(os.path.dirname(video_path))
+    if not os.path.exists(video_dir):
+        os.makedirs(video_dir)
     
-    # Specify codec explicitly
-    video_writer = imageio.get_writer(video_path, fps=10, codec='libx264')
+    total_rewards = []
 
-    state = eval_env.reset()
-    state = [np.array(s) for s in state]
-    prev_action = [[np.random.randint(0, agent.action_dim) for _ in range(agent.num_agent)]]
-    
-    total_reward = 0
-
-    for _ in range(25):
-        frame = eval_env.render()
-        video_writer.append_data(frame)
+    # 录制多次评估
+    for eval_idx in range(num_evaluations):
+        print(f"Recording evaluation {eval_idx + 1}/{num_evaluations}")
         
-        action_batch = agent.take_action([state], prev_action, explore=False)
-        action = action_batch[0]
+        video_path = os.path.join(video_dir, f'{model_identifier}_eval_{eval_idx + 1}.mp4')
+        video_writer = imageio.get_writer(video_path, fps=10, codec='libx264',macro_block_size=1)
 
-        next_state, reward, _, _, _ = eval_env.step(action)
+        state = eval_env.reset()
+        state = [np.array(s) for s in state]
+        prev_action = [[np.random.randint(0, agent.action_dim) for _ in range(agent.num_agent)]]
         
-        state = [np.array(s) for s in next_state]
-        prev_action = [action]
-        total_reward += np.sum(reward)
+        episode_reward = 0
+
+        for step in range(25):
+            frame = eval_env.render()
+            video_writer.append_data(frame)
+            
+            # 评估时，num_env 是 1
+            action_batch = agent.take_action([state], prev_action, explore=False)
+            action = action_batch[0]
+
+            next_state, reward, _, _, _ = eval_env.step(action)
+            
+            state = [np.array(s) for s in next_state]
+            prev_action = [action]
+            episode_reward += np.sum(reward) / agent.num_agent
+        
+        video_writer.close()
+        total_rewards.append(episode_reward)
+        print(f"Episode {eval_idx + 1} reward: {episode_reward:.2f}, video saved to {video_path}")
     
-    video_writer.close()
     eval_env.close()
-    print(f"Evaluation finished. Total reward: {total_reward}")
-    print(f"Video saved to {video_path}")
+    
+    # 打印统计信息
+    avg_reward = np.mean(total_rewards)
+    std_reward = np.std(total_rewards)
+    print(f"Evaluation finished. Average reward: {avg_reward:.2f} ± {std_reward:.2f}")
+    print(f"Individual rewards: {[f'{r:.2f}' for r in total_rewards]}")
+    print(f"All videos saved to {video_dir}")
 
 
 if __name__ == "__main__":
     # --- Hyperparameters ---
     min_size = 500
-    max_size = 100000
-    batch_size = 128
-    
-    state_dim = 18
-    action_dim = 5
+    max_size = 5000
+    batch_size = 256
     hidden_dim = 128
     num_agent = 3
     num_env = 20
+    episode_len = 25
     
     q_net_lr = 5e-4
     qmix_lr = 5e-4
     gamma = 0.99
     explore_rate = 1.0
-    explore_rate_decay = 0.99995
-    min_explore_rate = 0.01
-    update_gap = 200
+    min_explore_rate = 0.05
+    update_gap = 500
     
     device_name = "cuda:1" if torch.cuda.is_available() else "cpu"
     device = torch.device(device_name)
     print(f"Using device: {device_name}")
 
-    num_episodes = 100000 # Using total episodes directly
+    num_episodes = 500000
     update_iter = 1
 
     # --- Setup ---
-    # torch.manual_seed(1)
-    # np.random.seed(1)
-    # if device_name == "cuda:1":
-    #     torch.cuda.manual_seed_all(1)
-
     current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     log_dir = os.path.join('logs', 'qmix_experiment_' + current_time)
     print(f"Logs will be saved to: {log_dir}")
 
     replay = Replay(min_size, max_size, batch_size)
-    env = ParallelEnv(num_env)
+    env_creator_fn = lambda: simple_spread_v3.parallel_env(N=num_agent, max_cycles=episode_len, local_ratio=0.5)
+    env = ParallelEnv(env_fn=env_creator_fn, n_envs=num_env)
+    # 动态获取 state_dim 和 action_dim
+    state_dim = env.observation_space.shape[0]
+    action_dim = env.action_space.n
+    print(f"Environments initialized. State dim: {state_dim}, Action dim: {action_dim}")
+    
     
     agent_params = {
         'state_dim': state_dim, 'action_dim': action_dim, 'hidden_dim': hidden_dim,
         'num_agent': num_agent, 'num_env': num_env, 'q_net_lr': q_net_lr,
         'qmix_lr': qmix_lr, 'gamma': gamma, 'explore_rate': explore_rate,
-        'explore_rate_decay': explore_rate_decay, 'min_explore_rate': min_explore_rate,
+        'min_explore_rate': min_explore_rate,
         'update_gap': update_gap, 'device': device
     }
     agent = QmixAgent(**agent_params)
 
     # --- Training ---
-    return_list, model_path = train_off_policy_agent(env, agent, replay, num_episodes, update_iter, log_dir)
+    # return_list, model_path = train_off_policy_agent(env, agent, replay, num_episodes, update_iter, log_dir)
 
     # --- Evaluation and Video Recording ---
     eval_agent_params = agent_params.copy()
-    eval_agent_params['num_env'] = 1
-    
-    # Evaluate the BEST model
+    eval_agent_params['num_env'] = 1 # 评估时只用一个环境
+    path = "./logs/qmix_experiment_20250616-205733"
+    model_path = os.path.join(path, 'models')
     print("\n--- Evaluating Best Model ---")
-    video_path_best = os.path.join(log_dir, 'evaluation_video_best.mp4')
-    evaluate_and_record(eval_agent_params, model_path, 'best', video_path_best)
+    video_path_best = os.path.join(path, 'evaluation_video_best')
+    evaluate_and_record(eval_agent_params, model_path, 'best', video_path_best, num_evaluations=5)
     
-    # Evaluate the FINAL model
     print("\n--- Evaluating Final Model ---")
-    video_path_final = os.path.join(log_dir, 'evaluation_video_final.mp4')
-    evaluate_and_record(eval_agent_params, model_path, 'final', video_path_final)
+    video_path_final = os.path.join(path, 'evaluation_video_final')
+    evaluate_and_record(eval_agent_params, model_path, 'final', video_path_final, num_evaluations=5)
 

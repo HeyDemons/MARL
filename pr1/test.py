@@ -125,7 +125,7 @@ if __name__ == '__main__':
     runner.evaluate()
     
     # 保存为GIF
-    gif_path = os.path.join(current_dir, 'plot', f'{args.env_name}_demo_{load_timestamp}.gif')
+    gif_path = os.path.join(current_dir, 'plot', f'{args.env_name}_{args.algorithm}_{load_timestamp}.gif')
     print(f"正在保存GIF到: {gif_path}")
     imageio.mimsave(gif_path, frames, duration=0.2)  # duration单位为秒
     
