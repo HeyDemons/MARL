@@ -46,23 +46,18 @@ class RUNNER:
 
 
     def train(self):
-        # # 使用visdom实时查看训练曲线
-        # viz = None
-        # if self.par.visdom:
-        #     viz = visdom.Visdom()
-        #     viz.close()
         step = 0
-        # 记录每个episode的和奖励 用于平滑，显示平滑奖励函数
-        # reward_sum_record = []
-        # # 存储csv数据
-        # all_adversary_avg_rewards = []  # 记录每轮episode的追捕者的平均奖励
-        # all_sum_rewards = []  # 记录每轮episode的所有智能体的奖励和
-        
         # 记录每个智能体在每个episode的奖励
         self.episode_rewards = {agent_id: np.zeros(self.par.episode_num) for agent_id in self.env.agents}
+        epsilon_decay_episodes = int(0.8 * self.par.episode_num)  
+        epsilon_decay = (self.par.epsilon_start - self.par.epsilon_min) / epsilon_decay_episodes  
+        epsilon = self.par.epsilon_start # 初始epsilon值
+        
+        # 创建tqdm进度条
+        pbar = tqdm.tqdm(range(self.par.episode_num), desc='Training Progress', ncols=120)
+        
         # episode循环
-        for episode in tqdm.tqdm(range(self.par.episode_num), desc='Training Progress', ncols=110):
-            # print(f"This is episode {episode}")
+        for episode in pbar:
             # 初始化环境 返回初始状态 为一个字典 键为智能体名字 即env.agents中的内容，内容为对应智能体的状态
             obs, _ = self.env.reset()
             self.done = {agent_id: False for agent_id in self.env_agents}
@@ -70,18 +65,15 @@ class RUNNER:
             agent_reward = {agent_id: 0 for agent_id in self.env_agents}
             # 每个智能体与环境进行交互
             while self.env.agents:  #  加入围捕判断
-                # print(f"While num:{step}")
                 step += 1
-                # 收集经验。未到学习阶段 所有智能体随机选择动作 动作同样为字典 键为智能体名字 值为对应的动作 这里为随机选择动作
-                if step < self.par.random_steps:
+                # epsilon采样
+                if np.random.rand() < epsilon:
+                    # 随机选择动作
                     action = {agent_id: self.env.action_space(agent_id).sample() for agent_id in self.env.agents}
                 # 开始学习 根据策略选择动作
                 else:
-                    action = self.agent.select_action(obs)  #TODO 加入噪声？
+                    action = self.agent.select_action(obs)  
                 # 执行动作 获得下一状态 奖励 终止情况
-                # 下一状态：字典 键为智能体名字 值为对应的下一状态
-                # 奖励：字典 键为智能体名字 值为对应的奖励
-                # 终止情况：bool
                 next_obs, reward, terminated, truncated, info = self.env.step(action)
 
                 self.done = {agent_id: bool(terminated[agent_id] or truncated[agent_id]) for agent_id in self.env_agents}
@@ -102,44 +94,33 @@ class RUNNER:
                 # 状态更新
                 obs = next_obs
 
-            # 记录、绘制每个智能体在当前episode中的和奖励
-            sum_reward = 0
-            for agent_id, r in agent_reward.items():
-                sum_reward += r
-                if self.par.visdom:
-                    self.viz.line(X=[episode + 1], Y=[r], win='sum reward of the agent ' + str(agent_id),
-                             opts={'title': 'reward of the agent ' + str(agent_id) + ' in all episode'},
-                             update='append')
-
-            '''
-                adversary_x:追捕者 
-                agent_x:逃跑者
-            '''# 绘制追捕者在当前episode的奖励和
-            adversary_rewards_list = []
-            good_agent_rewards_list = []
-            for agent_id, r in agent_reward.items():
-                if agent_id.startswith('adversary_'):        
-                    adversary_rewards_list.append(r)
-                if agent_id.startswith('agent_'):
-                    good_agent_rewards_list.append(r)
-            # 计算围捕者的平均奖励
-            avg_adversary_reward  =  np.mean(adversary_rewards_list)
-            # 计算逃跑者的平均奖励
-            avg_good_agent_reward = np.mean(good_agent_rewards_list)
-            if self.par.visdom:
-                self.viz.line(X=[episode + 1], Y=[avg_adversary_reward], win='adversary average reward',
-                         opts={'title': 'Average reward of adversaries'},
-                         update='append')
+            # 计算当前episode的总奖励和平均奖励
+            sum_reward = sum(agent_reward.values())
+            
+            # 计算adversary和good agent的平均奖励
+            adversary_rewards_list = [r for agent_id, r in agent_reward.items() if agent_id.startswith('adversary_')]
+            good_agent_rewards_list = [r for agent_id, r in agent_reward.items() if agent_id.startswith('agent_')]
+            
+            avg_adversary_reward = np.mean(adversary_rewards_list) if adversary_rewards_list else 0
+            avg_good_agent_reward = np.mean(good_agent_rewards_list) if good_agent_rewards_list else 0
+            
+            # 更新epsilon值
+            if episode < epsilon_decay_episodes:
+                epsilon = max(self.par.epsilon_min, epsilon - epsilon_decay)
+            else:
+                epsilon = self.par.epsilon_min
+            
+            # 更新tqdm的后缀信息
+            pbar.set_postfix({
+                'Eps': f'{epsilon:.3f}',
+                'Adv_Avg': f'{avg_adversary_reward:.2f}',
+                'Good_Avg': f'{avg_good_agent_reward:.2f}'
+            })
                 
             # 记录当前episode围捕者的平均奖励
             self.all_adversary_avg_rewards.append(avg_adversary_reward)
             self.all_good_agent_avg_rewards.append(avg_good_agent_reward)
-            # 绘制所有智能体在当前episode的和奖励
-            if self.par.visdom:
-                self.viz.line(X=[episode + 1], Y=[sum_reward], win='Sum reward of all agents',
-                         opts={'title': 'Sum reward of all agents in all episode'},
-                         update='append')
-                
+            
             # 记录当前episode的所有智能体和奖励 存储到csv中
             self.all_sum_rewards.append(sum_reward)
             # 记录当前episode的所有智能体和奖励 为奖励平滑做准备
@@ -149,22 +130,17 @@ class RUNNER:
             # 保存当前智能体在当前episode的奖励
             for agent_id, r in agent_reward.items():
                 self.episode_rewards[agent_id][episode] = r  #  episode_rewards  字典： {agent_id:[episoed1_reward, episode2_reward,...]}
+            
             # 根据平滑窗口确定打印间隔 并进行平滑
             if (episode + 1) % self.par.size_win == 0:  #  500 步平滑一次
                 message = f'episode {episode + 1}, '
-                sum_reward = 0
+                sum_reward_check = 0
                 for agent_id, r in agent_reward.items():
                     message += f'{agent_id}: {r:>4f}; ' # r:>4f 是格式化字符串，用于保留四位小数。
-                    sum_reward += r
-                message += f'sum reward: {sum_reward}'
-                print(message)
-                if self.par.visdom:
-                    epi = np.linspace(episode - (self.par.size_win - 2),
-                                      episode - (self.par.size_win - 2) + (self.par.size_win - 1), self.par.size_win,
-                                      dtype=int)
-                    self.viz.line(X=epi, Y=self.get_running_reward(self.reward_sum_record), win='Average sum reward',
-                             opts={'title': 'Average sum reward'},
-                             update='append')
+                    sum_reward_check += r
+                message += f'sum reward: {sum_reward_check}'
+                #换行print
+                print('\n'+ message)
                 self.reward_sum_record = []
 
         # 保存数据到文件（CSV格式）

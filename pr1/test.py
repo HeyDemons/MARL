@@ -9,7 +9,7 @@ def get_env(env_name, ep_len=200, render_mode = "None"):
     """create environment and get observation and action dimension of each agent in this environment"""
     new_env = None
     if env_name == 'simple_adversary_v3':
-        new_env = simple_adversary_v3.parallel_env(max_cycles=ep_len, continuous_actions=True)
+        new_env = simple_adversary_v3.parallel_env(max_cycles=ep_len, continuous_actions=True, render_mode=render_mode)
     if env_name == 'simple_spread_v3':
         new_env = simple_spread_v3.parallel_env(max_cycles=ep_len, render_mode="rgb_array")
     if env_name == 'simple_tag_v3':
@@ -69,12 +69,12 @@ class RecordingRunner(RUNNER):
                 for agent_id, r in reward.items():
                     agent_reward[agent_id] += r
                 obs = next_obs
-                if step % 10 == 0:
-                    print(f"Step {step}, obs: {obs}, action: {action}, reward: {reward}, done: {self.done}")
                 # 如果所有智能体都结束了，跳出循环
                 if all(self.done.values() or step >= self.par.episode_length):
                     break
-                
+            #打印每个智能体episode奖励
+            for agent_id, r in agent_reward.items():
+                print(f"Agent {agent_id} - Episode Reward: {r}") 
             sum_reward = sum(agent_reward.values())
             self.reward_sum_record.append(sum_reward)
                 
@@ -88,7 +88,7 @@ if __name__ == '__main__':
     current_dir = os.path.dirname(os.path.abspath(__file__))
     chkpt_dir = os.path.join(current_dir, 'models', args.env_name)
     # 加载模型的时间戳
-    load_timestamp = "2025-06-14_16-08"
+    load_timestamp = "2025-06-18_18-26"
     model_timestamp = None if load_timestamp == '' else load_timestamp
 
     
