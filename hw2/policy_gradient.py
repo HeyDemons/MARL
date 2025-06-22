@@ -18,7 +18,7 @@ class PolicyNetwork(nn.Module):
         return torch.softmax(self.fc3(x), dim=-1)
 
 class PolicyGradientAgent:
-    def __init__(self, state_size, action_size, learning_rate=0.002, gamma=0.99):
+    def __init__(self, state_size, action_size, learning_rate=2e-3, gamma=0.99):
         self.state_size = state_size
         self.action_size = action_size
         self.gamma = gamma
@@ -115,7 +115,7 @@ def train_pg(env_name='CartPole-v1', num_episodes=500, max_steps=200, render_eve
         
         # Print episode statistics
         if episode % 10 == 0:
-            avg_score = np.mean(scores[-10:])
+            avg_score = np.mean(scores[-20:])
             print(f"Episode {episode}/{num_episodes}, Avg Score: {avg_score:.2f}")
     
     return agent, scores

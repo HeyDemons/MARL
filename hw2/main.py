@@ -11,7 +11,7 @@ def main():
     parser = argparse.ArgumentParser(description="Train and evaluate agents on CartPole")
     parser.add_argument("--algorithm", type=str, default="both", choices=["dqn", "pg", "both"], 
                       help="Algorithm to train (dqn, pg, or both)")
-    parser.add_argument("--episodes", type=int, default=400, help="Number of training episodes")
+    parser.add_argument("--episodes", type=int, default=500, help="Number of training episodes")
     parser.add_argument("--eval", action="store_true", help="Evaluate the trained agent")
     parser.add_argument("--record", action="store_true", help="Record a video of the agent")
     parser.add_argument("--load", action="store_true", help="Load trained model instead of training")
@@ -61,17 +61,17 @@ def main():
     
     # Plot training results
     if dqn_scores is not None or pg_scores is not None:
-        plot_training_results(dqn_scores, pg_scores)
+        plot_training_results(dqn_scores, pg_scores, window=20)
     
     # Evaluate agents
     if args.eval:
         if dqn_agent:
             print("Evaluating DQN agent...")
-            dqn_score = evaluate_agent(dqn_agent, env_name, render=args.render)
+            dqn_score = evaluate_agent(dqn_agent, env_name, render=args.render, max_steps=200)
             
         if pg_agent:
             print("Evaluating Policy Gradient agent...")
-            pg_score = evaluate_agent(pg_agent, env_name, render=args.render)
+            pg_score = evaluate_agent(pg_agent, env_name, render=args.render, max_steps=200)
             
         if dqn_agent and pg_agent:
             print(f"Comparison: DQN avg score = {dqn_score:.2f}, PG avg score = {pg_score:.2f}")

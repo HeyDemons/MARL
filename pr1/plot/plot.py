@@ -32,7 +32,7 @@ def different_plot_rewards(csv_file, window_size=50, alpha=0.1,time=None):
     
     # 创建两个图形
     # 1. 移动平均对比图
-    plt.figure(figsize=(15, 10))
+    plt.figure(figsize=(15, 15))
     # 追捕者奖励
     plt.subplot(3, 1, 1)
     plt.plot(df['Episode'], df['Adversary Average Reward'], 'lightgray', alpha=0.3, label='Raw Data')
@@ -68,7 +68,7 @@ def different_plot_rewards(csv_file, window_size=50, alpha=0.1,time=None):
     plt.savefig(save_path_ma, dpi=300, bbox_inches='tight')
     
     # 2. 指数移动平均对比图
-    plt.figure(figsize=(15, 10))
+    plt.figure(figsize=(15, 15))
     # 追捕者奖励
     plt.subplot(3, 1, 1)
     plt.plot(df['Episode'], df['Adversary Average Reward'], 'lightgray', alpha=0.3, label='Raw Data')
@@ -108,7 +108,7 @@ def different_plot_rewards(csv_file, window_size=50, alpha=0.1,time=None):
     
     plt.show()
 
-train_time = '2025-06-18_18-26'
+train_time = '2025-06-20_07-25'
 if __name__ == "__main__":
     # CSV文件路径（相对于当前脚本的路径）
     csv_file = os.path.join(os.path.dirname(__file__), 'data', 'data_rewards_{}.csv'.format(train_time))

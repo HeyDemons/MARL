@@ -34,8 +34,8 @@ class ReplayBuffer:
         return len(self.buffer)
 
 class DQNAgent:
-    def __init__(self, state_size, action_size, learning_rate=0.001, gamma=0.99,
-                 epsilon_start=1.0, epsilon_end=0.01, epsilon_decay=0.95, 
+    def __init__(self, state_size, action_size, learning_rate=0.0005, gamma=0.99,
+                 epsilon_start=1.0, epsilon_end=0.05, epsilon_decay=0.99, 
                  buffer_size=10000, batch_size=64, update_target_freq=10):
         self.state_size = state_size
         self.action_size = action_size
@@ -139,7 +139,7 @@ def train_dqn(env_name='CartPole-v1', num_episodes=500, max_steps=200, render_ev
         
         # Print episode statistics
         if episode % 10 == 0:
-            avg_score = np.mean(scores[-10:])
+            avg_score = np.mean(scores[-20:])
             print(f"Episode {episode}/{num_episodes}, Avg Score: {avg_score:.2f}, Epsilon: {agent.epsilon:.2f}")
 
     return agent, scores

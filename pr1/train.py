@@ -20,7 +20,7 @@ def get_env(env_name, ep_len=25, render_mode ="None"):
         new_env = simple_spread_v3.parallel_env(max_cycles=ep_len, render_mode="rgb_array",continuous_actions=True)
     if env_name == 'simple_tag_v3':
         new_env = simple_tag_v3.parallel_env(render_mode=render_mode, num_good=1, num_adversaries=3, num_obstacles=0, max_cycles=ep_len, continuous_actions=True)
-    new_env.reset()
+    new_env.reset(seed = 0)
     _dim_info = {}
     action_bound = {}
     for agent_id in new_env.agents:

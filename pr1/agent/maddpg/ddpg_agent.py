@@ -15,7 +15,7 @@ class DDPG():
         self.critic = Critic(in_dim=global_obs_dim, out_dim=1, hidden_dim = 128, chkpt_dir = chkpt_dir, chkpt_name = (chkpt_name + 'critic.pth')).to(device)
         #优化器
         self.actor_optimizer = Adam(self.actor.parameters(), lr = actor_lr)
-        self.critic_optimizer = Adam(self.critic.parameters(), lr = critic_lr)
+        self.critic_optimizer = Adam(self.critic.parameters(), lr = critic_lr, weight_decay=1e-3)
         # 创建相对于的target网络
         """
         使用 deepcopy 创建 target 网络是一个更好的选择，原因如下：
@@ -26,14 +26,14 @@ class DDPG():
         self.target_actor = deepcopy(self.actor)
         self.target_critic = deepcopy(self.critic)
 
-    def action(self, obs, model_out = False):
+    def action(self, obs):
         # 其中没有用到logi, 接受其返回值第二项为 '_' 具体地:  a, _ = self.agents[agent].action(o) 
-        action, logi = self.actor(obs)
-        return action, logi
+        action = self.actor(obs)
+        return action
 
     def target_action(self,obs):
-        action, logi = self.target_actor(obs)
-        return action, logi
+        action = self.target_actor(obs)
+        return action
     
     def critic_value(self, state_list: List[Tensor], act_list: List[Tensor]):  # 包含Tensor对象的列表
         x = torch.cat(state_list + act_list, 1)
