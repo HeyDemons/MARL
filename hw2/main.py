@@ -9,7 +9,7 @@ import os
 os.environ["SDL_VIDEODRIVER"] = "dummy"
 def main():
     parser = argparse.ArgumentParser(description="Train and evaluate agents on CartPole")
-    parser.add_argument("--algorithm", type=str, default="both", choices=["dqn", "pg", "both"], 
+    parser.add_argument("--algorithm", type=str, default="pg", choices=["dqn", "pg", "both"], 
                       help="Algorithm to train (dqn, pg, or both)")
     parser.add_argument("--episodes", type=int, default=500, help="Number of training episodes")
     parser.add_argument("--eval", action="store_true", help="Evaluate the trained agent")

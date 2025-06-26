@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-import numpy as np
+import torch.functional as F
 import os
 from datetime import datetime
 
@@ -10,7 +10,6 @@ class Actor(nn.Module):
         self.chkpt_dir = chkpt_dir
         self.chkpt_name = chkpt_name
 
-        # different ,为什么要保持这两个信息？
         self.out_dim = out_dim
         self.action_bound = action_bound
 
@@ -20,31 +19,26 @@ class Actor(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
             non_linear,
             nn.Linear(hidden_dim, out_dim),
-        )
-        # 初始化网络参数
-        self.net_init(self.net[0])
-        self.net_init(self.net[2])
-        self.final_net_init(self.net[4], -3e-3, 3e-3)
+        ).apply(self.init)
 
-
-    def net_init(self, layer):
-        fan_in = layer.weight.data.size(0)
-        limit = 1.0 / np.sqrt(fan_in)
-        nn.init.uniform_(layer.weight, -limit, limit)
-        nn.init.uniform_(layer.bias, -limit, limit)
-
-    def final_net_init(self, layer, low, high):
-        if isinstance(layer, nn.Linear):
-            nn.init.uniform_(layer.weight, low, high)
-            nn.init.uniform_(layer.bias, low, high)
+    @staticmethod
+    def init(m):
+        '''init patameters of the module'''
+        gain = nn.init.calculate_gain('relu')
+        if isinstance(m, nn.Linear):
+            nn.init.xavier_uniform_(m.weight, gain = gain)  #使用了 Xavier 均匀分布初始化（也叫 Glorot 初始化）
+            m.bias.data.fill_(0.01)
     
     def forward(self, x):
         x = self.net(x)
+        logi = x
         a_min = self.action_bound[0]
         a_max = self.action_bound[1]
-        # 将输出限制在指定范围内
-        action = torch.tanh(x)
-        return action
+        ''' 这三行为什么要这么处理？ 引入了bias项干嘛'''
+        k = torch.tensor( (a_max - a_min) /2 , device=x.device )
+        bias = torch.tensor( (a_max + a_min) /2, device=x.device )
+        action = k * torch.tanh(x) + bias
+        return action, logi
 
     def save_checkpoint(self, is_target=False, timestamp = False):
         # 使用时间戳保存功能

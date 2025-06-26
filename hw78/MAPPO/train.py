@@ -154,7 +154,6 @@ if __name__ == '__main__':
     parser.add_argument("--use_grad_clip", type=bool, default=True, help="Gradient clipping")
     parser.add_argument("--use_orthogonal_init", type=bool, default=True, help="Orthogonal init")
     parser.add_argument("--set_adam_eps", type=float, default=True, help="Adam epsilon")
-    parser.add_argument("--use_relu", type=float, default=False, help="Use relu (else tanh)")
     parser.add_argument('--render_mode', type=str, default='None', help='Render mode')
 
     args = parser.parse_args()

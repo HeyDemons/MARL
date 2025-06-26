@@ -26,14 +26,14 @@ class DDPG():
         self.target_actor = deepcopy(self.actor)
         self.target_critic = deepcopy(self.critic)
 
-    def action(self, obs):
+    def action(self, obs, model_out = False):
         # 其中没有用到logi, 接受其返回值第二项为 '_' 具体地:  a, _ = self.agents[agent].action(o) 
-        action = self.actor(obs)
-        return action
+        action, logi = self.actor(obs)
+        return action, logi
 
     def target_action(self,obs):
-        action = self.target_actor(obs)
-        return action
+        action, logi = self.target_actor(obs)
+        return action, logi
     
     def critic_value(self, state_list: List[Tensor], act_list: List[Tensor]):  # 包含Tensor对象的列表
         x = torch.cat(state_list + act_list, 1)

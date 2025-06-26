@@ -19,7 +19,7 @@ class Actor_MLP(nn.Module):
         self.fc1 = nn.Linear(actor_input_dim, args.mlp_hidden_dim)
         self.fc2 = nn.Linear(args.mlp_hidden_dim, args.mlp_hidden_dim)
         self.fc3 = nn.Linear(args.mlp_hidden_dim, args.action_dim)
-        self.activate_func = [nn.Tanh(), nn.ReLU()][args.use_relu]
+        self.activate_func = nn.Tanh()
 
         if args.use_orthogonal_init:
             print("------use_orthogonal_init------")
@@ -42,7 +42,7 @@ class Critic_MLP(nn.Module):
         self.fc1 = nn.Linear(critic_input_dim, args.mlp_hidden_dim)
         self.fc2 = nn.Linear(args.mlp_hidden_dim, args.mlp_hidden_dim)
         self.fc3 = nn.Linear(args.mlp_hidden_dim, 1)
-        self.activate_func = [nn.Tanh(), nn.ReLU()][args.use_relu]
+        self.activate_func = nn.Tanh()
         if args.use_orthogonal_init:
             print("------use_orthogonal_init------")
             orthogonal_init(self.fc1)

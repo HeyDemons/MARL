@@ -30,9 +30,7 @@ class MADDPG():
             self.buffers[agent_id] = ReplayBuffer(capacity, obs_dim, act_dim, self.device)
         self.dim_info = dim_info
         self.batch_size = batch_size
-        self.regular = False
-        self.bacth_size_obs_norm = {agent_id: Normalization_batch_size(dim_info[agent_id][0], _device) for
-                                    agent_id in dim_info.keys()}  # obs_dim, device
+
     def add(self, obs, action, reward, next_obs, done):
         for agent_id in obs.keys():
             o = obs[agent_id]
@@ -47,18 +45,18 @@ class MADDPG():
     
     def sample(self, batch_size):
         """sample experience from all the agents' buffers, and collect data for network input"""
-        # get the total num of transitions, these buffers should have same number of transitions
         total_num = len(self.buffers['agent_0'])
         indices = np.random.choice(total_num, size = batch_size, replace = False)
-        # NOTE that in MADDPG, we need the obs and actions of all agents
-        # but only the reward and done of the current agent is needed in the calculation
         obs, act, reward, next_obs, done, next_act = {}, {}, {}, {}, {}, {}
         for agent_id, buffer in self.buffers.items():
-            obs[agent_id], act[agent_id], reward[agent_id], next_obs[agent_id], done[agent_id] = buffer.sample(indices)
-            obs[agent_id] = self.bacth_size_obs_norm[agent_id](obs[agent_id], update = True)  # normalize the obs
-            next_obs[agent_id] = self.bacth_size_obs_norm[agent_id](next_obs[agent_id], update = False)  # normalize the next_obs
+            o, a, r, n_o, d = buffer.sample(indices)
+            obs[agent_id] = o
+            act[agent_id] = a
+            reward[agent_id] = r
+            next_obs[agent_id] = n_o
+            done[agent_id] = d
             # calculate next_action using target_network and next_state
-            next_act[agent_id] = self.agents[agent_id].target_action(next_obs[agent_id])
+            next_act[agent_id], _ = self.agents[agent_id].target_action(n_o)
         
         return obs, act, reward, next_obs, done, next_act
     
@@ -66,8 +64,7 @@ class MADDPG():
         action = {}
         for agent, o in obs.items():
             o = torch.from_numpy(o).unsqueeze(0).float().to(self.device)
-            o = self.bacth_size_obs_norm[agent](o, update = False)  # normalize the obs
-            a = self.agents[agent].action(o)   # torch.Size([1, action_size])    
+            a, _ = self.agents[agent].action(o)   # torch.Size([1, action_size])    #action函数：  action, logi = self.actor(obs)
             # NOTE that the output is a tensor, convert it to int before input to the environment
             action[agent] = a.squeeze(0).detach().cpu().numpy()
         return action
@@ -76,19 +73,20 @@ class MADDPG():
         for agent_id, agent in self.agents.items():
             obs, act, reward, next_obs, done, next_act = self.sample(batch_size)
             # upate critic
-            next_target_q = agent.target_critic_value(list(next_obs.values()), list(next_act.values()))
-            target_Q = reward[agent_id] + gamma * next_target_q * (1 - done[agent_id])
-            current_Q = agent.critic_value(list(obs.values()), list(act.values()))
-            critic_loss = F.mse_loss(current_Q, target_Q.detach())
+            critic_value = agent.critic_value( list(obs.values()), list(act.values()) )
+
+            next_target_critic_value = agent.target_critic_value(list(next_obs.values()),
+                                                                 list(next_act.values()))
+            target_value = reward[agent_id] + gamma * next_target_critic_value* (1-done[agent_id])
+            critic_loss = F.mse_loss(critic_value, target_value.detach(), reduction = 'mean')
             agent.update_critic(critic_loss)
 
             #update actor
-            new_act = agent.action(obs[agent_id])  # get the action from actor
-            act[agent_id] = new_act
-            actor_loss = - agent.critic_value(list(obs.values()), list(act.values())).mean()
-            if self.regular:
-                actor_loss += (new_act ** 2).mean() * 1e-3  # add regularization to actor loss
-
+            action, logits = agent.action(obs[agent_id], model_out = True)
+            act[agent_id] = action
+            actor_loss = - agent.critic_value( list(obs.values()), list(act.values()) ).mean()
+            actor_loss_pse = torch.pow(logits, 2).mean()  #这个是干嘛的？
+            agent.update_actor(actor_loss + 1e-3 *actor_loss_pse)
     
     def update_target(self, tau): #  嵌套函数定义
         def soft_update(from_network, to_network):
@@ -135,36 +133,3 @@ class MADDPG():
         for name, param in agent.actor.state_dict().items():
         # 仅打印前几个值（例如前5个）
             print(f"Layer: {name}, Shape: {param.shape}, Values: {param.flatten()[:5]}")  # flatten() 展开参数为一维数组
-
-class RunningMeanStd_batch_size:
-    # Dynamically calculate mean and std
-    def __init__(self, shape,device):  # shape:the dimension of input data
-        self.n = 0
-        self.mean = torch.zeros(shape).to(device)
-        self.S = torch.zeros(shape).to(device)
-        self.std = torch.sqrt(self.S).to(device)
-
-    def update(self, x):
-        x = x.mean(dim=0,keepdim=True)
-        self.n += 1
-        if self.n == 1:
-            self.mean = x
-            self.std = x
-        else:
-            old_mean = self.mean 
-            self.mean = old_mean + (x - old_mean) / self.n
-            self.S = self.S + (x - old_mean) * (x - self.mean)
-            self.std = torch.sqrt(self.S / self.n)
-    
-            
-class Normalization_batch_size:
-    def __init__(self, shape, device):
-        self.running_ms = RunningMeanStd_batch_size(shape,device)
-
-    def __call__(self, x, update=True):
-        # Whether to update the mean and std,during the evaluating,update=False #是否更新均值和方差，在评估时，update=False
-        if update:
-            self.running_ms.update(x)
-        x = (x - self.running_ms.mean) / (self.running_ms.std + 1e-8)
-
-        return x

@@ -7,7 +7,7 @@ import os
 
 def plot_training_results(dqn_scores=None, pg_scores=None, window=10):
     """Plot the training progress of DQN and/or Policy Gradient algorithms."""
-    plt.figure(figsize=(12, 5))
+    plt.figure(figsize=(10, 6), dpi=300)
     
     if dqn_scores is not None:
         # Plot raw scores
@@ -32,7 +32,7 @@ def plot_training_results(dqn_scores=None, pg_scores=None, window=10):
     plt.title('Training Progress')
     plt.legend()
     plt.grid(True)
-    plt.savefig('training_progress_pg.png')
+    plt.savefig('training_progress.png')
     plt.show()
 
 def evaluate_agent(agent, env_name='CartPole-v1', num_episodes=10, max_steps=1000, render=False):
