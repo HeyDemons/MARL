@@ -1,0 +1,16 @@
+# 忽略 wandb 文件夹，无论它在哪里
+wandb/
+
+# 忽略 logs 文件夹，无论它在哪里
+logs/
+runs/
+# 忽略 models 文件夹，无论它在哪里
+models/
+
+# 忽略所有以 .pth 结尾的文件，无论它在哪里
+*.pth
+data/
+__pycache__/
+*.npy
+*.json
+*.txt
