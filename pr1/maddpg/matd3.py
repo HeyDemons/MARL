@@ -2,11 +2,10 @@
 """
 Multi-Agent Twin-Delayed DDPG (MATD3) Implementation
 """
+import os
 import torch
 import torch.nn.functional as F
-import numpy as np
 from .ddpg import DDPGAgent
-import os
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -17,7 +16,8 @@ class MATD3:
     def __init__(self, state_sizes, action_sizes, hidden_sizes=(64, 64), 
                  actor_lr=1e-4, critic_lr=1e-3, gamma=0.99, tau=1e-3, 
                  action_low=-1.0, action_high=1.0,
-                 policy_update_freq=2, target_noise=0.2, noise_clip=0.5):
+                 policy_update_freq=2, target_noise=0.2, noise_clip=0.5,
+                 shared_groups=None): # 新增参数
         """
         Initialize a MATD3 agent.
         
@@ -34,6 +34,9 @@ class MATD3:
             policy_update_freq (int): Frequency of policy updates (TD3 parameter)
             target_noise (float): Scale of noise added to target actions (TD3 parameter)
             noise_clip (float): Clipping range for target action noise (TD3 parameter)
+            shared_groups (dict, optional): Defines agent groups for parameter sharing. 
+                                            Example: {'group1': [0, 1], 'group2': [2, 3]}. 
+                                            Defaults to None (no sharing).
         """
         self.num_agents = len(state_sizes)
         self.state_sizes = state_sizes
@@ -49,18 +52,40 @@ class MATD3:
         self.total_state_size = sum(state_sizes)
         self.total_action_size = sum(action_sizes)
         
-        self.agents = [DDPGAgent(
-                            state_sizes[i], action_sizes[i], hidden_sizes,
-                            actor_lr, critic_lr, tau,
-                            centralized=True, total_state_size=self.total_state_size,
-                            total_action_size=self.total_action_size,
-                            action_low=action_low, action_high=action_high
-                        ) for i in range(self.num_agents)]
+        if shared_groups:
+            # --- 参数共享模式 ---
+            self.agent_models = {}
+            self.agent_map = [None] * self.num_agents
+            for group_name, agent_indices in shared_groups.items():
+                # 为每个组创建一个共享的 DDPGAgent 实例
+                first_agent_idx = agent_indices[0]
+                shared_agent = DDPGAgent(
+                    state_sizes[first_agent_idx], action_sizes[first_agent_idx], hidden_sizes,
+                    actor_lr, critic_lr, tau,
+                    centralized=True, total_state_size=self.total_state_size,
+                    total_action_size=self.total_action_size,
+                    action_low=action_low, action_high=action_high
+                )
+                self.agent_models[group_name] = shared_agent
+                # 将组内所有智能体索引映射到这个共享实例
+                for agent_idx in agent_indices:
+                    self.agent_map[agent_idx] = shared_agent
+            self.agents = self.agent_map # 保持API一致性
+        else:
+            # --- 独立模式 (原始行为) ---
+            self.agents = [DDPGAgent(
+                                state_sizes[i], action_sizes[i], hidden_sizes,
+                                actor_lr, critic_lr, tau,
+                                centralized=True, total_state_size=self.total_state_size,
+                                total_action_size=self.total_action_size,
+                                action_low=action_low, action_high=action_high
+                            ) for i in range(self.num_agents)]
         
         self._update_counter = 0
 
     def act(self, states, add_noise=True, noise_scale=0.1):
         """Get actions from all agents."""
+        # 此处代码无需修改，因为它迭代 self.agents，而 self.agents 已经被正确设置
         actions = [agent.act(state, add_noise, noise_scale) 
                    for agent, state in zip(self.agents, states)]
         return actions
@@ -74,6 +99,7 @@ class MATD3:
         Update policy and value parameters for a specific agent using TD3 logic.
         """
         states, actions, rewards, next_states, dones, states_full, next_states_full, actions_full = experiences
+        # 此处代码无需修改，self.agents[agent_idx] 会自动获取到正确的共享模型或独立模型
         current_agent = self.agents[agent_idx]
         
         agent_rewards = rewards[agent_idx]
@@ -170,12 +196,22 @@ class MATD3:
     def save(self, path):
         """Save all agent models to a single file."""
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        models_dict = {
-            f'agent_{i}_actor': agent.actor.state_dict() for i, agent in enumerate(self.agents)
-        }
-        for i, agent in enumerate(self.agents):
-            models_dict[f'agent_{i}_critic'] = agent.critic.state_dict()
-            models_dict[f'agent_{i}_critic2'] = agent.critic2.state_dict()
+        
+        # 根据是否共享参数来构建模型字典
+        if hasattr(self, 'agent_models'): # 共享模式
+            models_dict = {
+                f'group_{name}_actor': model.actor.state_dict() for name, model in self.agent_models.items()
+            }
+            for name, model in self.agent_models.items():
+                models_dict[f'group_{name}_critic'] = model.critic.state_dict()
+                models_dict[f'group_{name}_critic2'] = model.critic2.state_dict()
+        else: # 独立模式
+            models_dict = {
+                f'agent_{i}_actor': agent.actor.state_dict() for i, agent in enumerate(self.agents)
+            }
+            for i, agent in enumerate(self.agents):
+                models_dict[f'agent_{i}_critic'] = agent.critic.state_dict()
+                models_dict[f'agent_{i}_critic2'] = agent.critic2.state_dict()
         
         torch.save(models_dict, path)
         print(f"MATD3 models saved to {path}")
@@ -183,22 +219,30 @@ class MATD3:
     def load(self, path):
         """Load all agent models from a single file."""
         if not os.path.exists(path):
-            print(f"Warning: No model file found at {path}")
+            print(f"Error: Model file not found at {path}")
             return
             
-        models_dict = torch.load(path)
+        models_dict = torch.load(path, map_location=device)
         
-        for i, agent in enumerate(self.agents):
-            agent.actor.load_state_dict(models_dict[f'agent_{i}_actor'])
-            agent.actor_target.load_state_dict(models_dict[f'agent_{i}_actor'])
-
-            agent.critic.load_state_dict(models_dict[f'agent_{i}_critic'])
-            agent.critic_target.load_state_dict(models_dict[f'agent_{i}_critic'])
-
-            # Load the second critic if it exists in the file
-            critic2_key = f'agent_{i}_critic2'
-            if critic2_key in models_dict:
-                agent.critic2.load_state_dict(models_dict[critic2_key])
-                agent.critic_target2.load_state_dict(models_dict[critic2_key])
+        if hasattr(self, 'agent_models'): # 共享模式
+            for name, model in self.agent_models.items():
+                model.actor.load_state_dict(models_dict[f'group_{name}_actor'])
+                model.critic.load_state_dict(models_dict[f'group_{name}_critic'])
+                if f'group_{name}_critic2' in models_dict:
+                    model.critic2.load_state_dict(models_dict[f'group_{name}_critic2'])
+                # Hard update target networks
+                model.hard_update(model.actor_target, model.actor)
+                model.hard_update(model.critic_target, model.critic)
+                model.hard_update(model.critic_target2, model.critic2)
+        else: # 独立模式
+            for i, agent in enumerate(self.agents):
+                agent.actor.load_state_dict(models_dict[f'agent_{i}_actor'])
+                agent.critic.load_state_dict(models_dict[f'agent_{i}_critic'])
+                if f'agent_{i}_critic2' in models_dict:
+                    agent.critic2.load_state_dict(models_dict[f'agent_{i}_critic2'])
+                # Hard update target networks
+                agent.hard_update(agent.actor_target, agent.actor)
+                agent.hard_update(agent.critic_target, agent.critic)
+                agent.hard_update(agent.critic_target2, agent.critic2)
         
-        print(f"All MATD3 models loaded from {path}")
+        print(f"MATD3 models loaded from {path}")

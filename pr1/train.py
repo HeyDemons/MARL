@@ -1,85 +1,298 @@
-from pettingzoo.mpe import simple_tag_v3, simple_adversary_v3, simple_spread_v3
-from agent.maddpg.maddpg_agent import MADDPG
-from agent.masac.masac_agent import MASAC
-from agent.matd3.matd3_agent import MATD3
-from agent.mappo.mappo_agent import MAPPO
+"""
+Training script for MADDPG with PettingZoo
+"""
 import torch
+import numpy as np
 import os
-import time
-from datetime import timedelta
-from utils.parameters import parameters
-from utils.logger import TrainingLogger
-from utils.runner import RUNNER, MAPPO_RUNNER
+import argparse
+from tqdm import tqdm
+from datetime import datetime
 
-def get_env(env_name, ep_len=25, render_mode ="None"):
-    """create environment and get observation and action dimension of each agent in this environment"""
-    new_env = None
-    if env_name == 'simple_adversary_v3':
-        new_env = simple_adversary_v3.parallel_env(max_cycles=ep_len, continuous_actions=True)
-    if env_name == 'simple_spread_v3':
-        new_env = simple_spread_v3.parallel_env(max_cycles=ep_len, render_mode="rgb_array",continuous_actions=True)
-    if env_name == 'simple_tag_v3':
-        new_env = simple_tag_v3.parallel_env(render_mode=render_mode, num_good=1, num_adversaries=3, num_obstacles=0, max_cycles=ep_len, continuous_actions=True)
-    new_env.reset(seed = 0)
-    _dim_info = {}
-    action_bound = {}
-    for agent_id in new_env.agents:
-        print("agent_id:",agent_id)
-        _dim_info[agent_id] = []  # [obs_dim, act_dim]
-        action_bound[agent_id] = [] #[low action,  hign action]
-        _dim_info[agent_id].append(new_env.observation_space(agent_id).shape[0])
-        _dim_info[agent_id].append(new_env.action_space(agent_id).shape[0])
-        action_bound[agent_id].append(new_env.action_space(agent_id).low)
-        action_bound[agent_id].append(new_env.action_space(agent_id).high)
-    print("_dim_info:",_dim_info)
-    print("action_bound:",action_bound)
-    return new_env, _dim_info, action_bound
+
+from maddpg import MADDPG, MADDPGApprox, ReplayBuffer, MATD3, MASAC
+from utils.env import get_env_info, ENV_MAP, create_single_env
+from utils.logger import Logger
+from utils.utils import evaluate
+
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--env-name", type=str, default="simple_tag_v3", 
+                       choices=list(ENV_MAP.keys()),
+                       help="Name of the environment to use")
+    parser.add_argument("--algo", type=str, default="MATD3", choices=["MADDPG", "MADDPGApprox", "MATD3", "MASAC"],
+                       help="Algorithm to use")
+    parser.add_argument("--total-timesteps", type=int, default=int(1e6), help="Total timesteps")
+    parser.add_argument("--buffer-size", type=int, default=int(1e6), help="Replay buffer size")
+    parser.add_argument("--warmup-steps", type=int, default=20000, help="Warmup steps")
+    parser.add_argument("--batch-size", type=int, default=512, help="Batch size")
+    parser.add_argument("--max-steps", type=int, default=25, help="Maximum steps per episode")
+    parser.add_argument("--gamma", type=float, default=0.95, help="Discount factor")
+    parser.add_argument("--tau", type=float, default=0.01, help="Soft update parameter")
+    parser.add_argument("--actor-lr", type=float, default=1e-3, help="Actor learning rate")
+    parser.add_argument("--critic-lr", type=float, default=2e-3, help="Critic learning rate")
+    parser.add_argument("--hidden-sizes", type=str, default="64,64", help="Hidden layer sizes (comma-separated)")
+    parser.add_argument("--update-every", type=int, default=25, help="Update networks every n steps")
+    parser.add_argument("--noise-scale", type=float, default=0.5, help="Initial noise scale")
+    parser.add_argument("--min-noise", type=float, default=0.05, help="Minimum noise scale")
+    parser.add_argument("--noise-decay-steps", type=int, 
+                        default=int(5e5), 
+                        help="Number of step to decay noise to min_noise default: 300k")
+    parser.add_argument("--use-noise-decay", action="store_true", help="Use noise decay")
+    parser.add_argument("--render-mode", type=str, default=None, choices=[None, "human", "rgb_array"], 
+                       help="Render mode for visualization")
+    parser.add_argument("--create-gif", action="store_true", help="Create GIF of episodes")
+    parser.add_argument("--eval-interval", type=int, default=5000, help="Evaluate every n steps")
+    parser.add_argument("--policy-update-freq", type=int, default=2, help="Policy update frequency for MATD3")
+    parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate for MASAC")
+    parser.add_argument("--use-parameter-sharing", action="store_true", 
+                       help="Enable parameter sharing for agents of the same type (e.g., all adversaries)")
+   
+    return parser.parse_args()
+
+def train(args):
+    
+    # Add timestamp to experiment name for uniqueness
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    experiment_name = (
+        "single"
+        f"_b{args.batch_size}"
+        f"_usteps{args.update_every}"
+        f"_g{args.gamma}"
+        f"_t{args.tau}"
+        f"_alr{args.actor_lr}"
+        f"_clr{args.critic_lr}"
+        f"_n{args.noise_scale}"
+        f"_minn{args.min_noise}"
+        f"_h{args.hidden_sizes}"
+        f"_{timestamp}")
+
+    logger = Logger(
+        run_name=experiment_name,
+        folder="runs",
+        algo=args.algo,
+        env=args.env_name
+    )
+    logger.log_all_hyperparameters(vars(args))
+    
+
+    # Get environment information
+    agents, num_agents, action_sizes, action_low, action_high, state_sizes = get_env_info(
+        env_name=args.env_name, 
+        max_steps=args.max_steps,
+        apply_padding=False  
+    )
+
+    # --- 新增：为参数共享创建分组 ---
+    shared_groups = None
+    if args.use_parameter_sharing:
+        shared_groups = {}
+        # 假设智能体名称包含类型，如 "adversary_0", "agent_0"
+        for i, agent_name in enumerate(agents):
+            group_name = agent_name.split('_')[0] # e.g., 'adversary' or 'agent'
+            if group_name not in shared_groups:
+                shared_groups[group_name] = []
+            shared_groups[group_name].append(i)
+        print("Using parameter sharing with groups:", shared_groups)
+    # --- 结束新增部分 ---
+
+    # Create environment with appropriate render mode
+    env = create_single_env(
+        env_name=args.env_name,
+        max_steps=args.max_steps,
+        render_mode=args.render_mode,
+        apply_padding=False
+    )
+    
+    # Create evaluation environment
+    env_evaluate = create_single_env(
+        env_name=args.env_name,
+        max_steps=args.max_steps,
+        render_mode="rgb_array",
+        apply_padding=False
+    )
+    
+    # Model path
+    model_path = os.path.join(logger.dir_name, "model.pt")
+    best_model_path = os.path.join(logger.dir_name, "best_model.pt")
+    best_score = -float('inf')
+    
+    # Parse hidden sizes
+    hidden_sizes = tuple(map(int, args.hidden_sizes.split(',')))
+    
+    # Create MADDPG agent
+    if args.algo == "MADDPG":
+        maddpg = MADDPG(
+            state_sizes=state_sizes,
+            action_sizes=action_sizes,
+            hidden_sizes=hidden_sizes,
+            actor_lr=args.actor_lr,
+            critic_lr=args.critic_lr,
+            gamma=args.gamma,
+            tau=args.tau,
+            action_low=action_low,
+            action_high=action_high
+        )
+    elif args.algo == "MADDPGApprox":
+        maddpg = MADDPGApprox(
+            state_sizes=state_sizes,
+            action_sizes=action_sizes,
+            hidden_sizes=hidden_sizes,
+            actor_lr=args.actor_lr,
+            critic_lr=args.critic_lr,
+            gamma=args.gamma,
+            tau=args.tau,
+            action_low=action_low,
+            action_high=action_high
+        )
+    elif args.algo == "MATD3": 
+        maddpg = MATD3(
+            state_sizes=state_sizes,
+            action_sizes=action_sizes,
+            hidden_sizes=hidden_sizes,
+            actor_lr=args.actor_lr,
+            critic_lr=args.critic_lr,
+            gamma=args.gamma,
+            tau=args.tau,
+            action_low=action_low,
+            action_high=action_high,
+            policy_update_freq=args.policy_update_freq,
+            shared_groups=shared_groups # 传入分组信息
+        )
+    elif args.algo == "MASAC":
+        agent_algorithm = MASAC(
+            state_sizes=state_sizes,
+            action_sizes=action_sizes,
+            hidden_sizes=hidden_sizes,
+            actor_lr=args.lr,
+            critic_lr=args.lr,
+            alpha_lr=args.lr,
+            gamma=args.gamma,
+            tau=args.tau,
+            action_low=action_low,
+            action_high=action_high
+        )
+
+    # Create replay buffer with the correct dimensions
+    buffer = ReplayBuffer(
+        buffer_size=args.buffer_size,
+        batch_size=args.batch_size,
+        agents=agents,
+        state_sizes=state_sizes,
+        action_sizes=action_sizes
+    )
+    
+    # Training loop
+    noise_scale = args.noise_scale
+    noise_decay = (args.noise_scale - args.min_noise) / min(args.noise_decay_steps, args.total_timesteps)
+    print(f"Using linear noise decay: {args.noise_scale} to {args.min_noise} over {args.noise_decay_steps} steps")
+    print(f"Noise will decrease by {noise_decay:.6f} per step")
+
+    evaluate(env_evaluate, maddpg, logger, record_gif=args.create_gif, num_eval_episodes=10, global_step=0)
+    
+    # For tracking agent-specific rewards
+    agent_rewards = [[] for _ in range(len(agents))]
+    episode_rewards = np.zeros(len(agents))
+
+    # Reset environment and agents
+    observations, _ = env.reset()
+
+    for global_step in tqdm(range(1, args.total_timesteps + 1), desc="Training"):
+        
+        # Get states for all agents
+        states_list = [np.array(observations[agent], dtype=np.float32) for agent in agents]
+        
+        # Get actions for all agents
+        actions_list = maddpg.act(states_list, add_noise=True, noise_scale=noise_scale)
+        
+        # Convert actions to dictionary for environment
+        actions = {agent: action for agent, action in zip(agents, actions_list)}
+        
+        # Take a step in the environment
+        next_observations, rewards, terminations, truncations, _ = env.step(actions)
+        
+        # Check if episode is done
+        dones = [terminations[agent] or truncations[agent] for agent in agents]
+        done = any(dones)
+        
+        # Prepare data for buffer (convert to NumPy once)
+        rewards_array = np.array([rewards[agent] for agent in agents], dtype=np.float32)
+        next_states_list = [np.array(next_observations[agent], dtype=np.float32) for agent in agents]
+        # we care about the termination of the episode
+        terminations_array = np.array([terminations[agent] for agent in agents], dtype=np.uint8)
+        
+        # Store experience in replay buffer
+        buffer.add(
+            states=states_list,
+            actions=actions_list,
+            rewards=rewards_array,
+            next_states=next_states_list,
+            dones=terminations_array
+        )
+        
+        # Update observations and rewards
+        observations = next_observations
+        episode_rewards += np.array(list(rewards.values()))         
+        
+        # Learn if enough samples are available in memory
+        if global_step > args.warmup_steps and global_step % args.update_every == 0:
+            for i in range(len(agents)):
+                experiences = buffer.sample()  # Now returns pre-combined states
+                if args.algo == "MASAC":
+                    critic_loss, actor_loss, alpha_loss, alpha = maddpg.learn(experiences, i)
+                    logger.add_scalar(f'{agents[i]}/critic_loss', critic_loss, global_step)
+                    logger.add_scalar(f'{agents[i]}/actor_loss', actor_loss, global_step)
+                    if i == 0:  # Log alpha only once
+                        logger.add_scalar('train/alpha', alpha, global_step)
+                        logger.add_scalar('train/alpha_loss', alpha_loss, global_step)
+                else:
+                    critic_loss, actor_loss = maddpg.learn(experiences, i)
+                    logger.add_scalar(f'{agents[i]}/critic_loss', critic_loss, global_step)
+                    if actor_loss !=0.0:  # Avoid logging zero loss
+                        logger.add_scalar(f'{agents[i]}/actor_loss', actor_loss, global_step)
+                
+            maddpg.update_targets()
+        
+        # Update noise scale based on iteration number
+        if global_step > args.warmup_steps and args.use_noise_decay:
+            noise_scale = max(
+                args.min_noise,
+                noise_scale - noise_decay
+            )
+        
+        # Handle episode end
+        if done or (global_step % args.max_steps == 0):  # Reset after max_steps if not done
+            for i, reward in enumerate(episode_rewards):
+                agent_rewards[i].append(reward)
+                logger.add_scalar(f"{agents[i]}/episode_reward", reward, global_step)
+            logger.add_scalar('train/total_reward', np.sum(episode_rewards), global_step)
+            logger.add_scalar(f"noise/scale", noise_scale, global_step)
+            observations, _ = env.reset()
+            episode_rewards = np.zeros(len(agents))
+        
+        # Evaluate and save
+        if global_step % args.eval_interval == 0 or global_step == args.total_timesteps:
+            maddpg.save(model_path)
+            avg_eval_rewards = evaluate(env_evaluate, maddpg, logger,
+                    num_eval_episodes=10, record_gif=args.create_gif, global_step=global_step)
+            np.save(os.path.join(logger.dir_name, "agent_rewards.npy"), agent_rewards)
+            score = np.sum(avg_eval_rewards)
+            if score > best_score:
+                best_score = score
+                maddpg.save(best_model_path)
+    
+    # Save final models
+    maddpg.save(model_path)
+    np.save(os.path.join(logger.dir_name, "agent_rewards.npy"), agent_rewards)
+    
+    # Close environment and TensorBoard writer
+    env.close()
+    env_evaluate.close()
+    logger.close()
+    
+    # Return both the agent rewards and the experiment name
+    return agent_rewards, experiment_name
 
 if __name__ == "__main__":
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print("device:", device)
-    start_time = time.time()
-    args = parameters()
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    chkpt_dir = os.path.join(current_dir, "models", args.env_name)
-    if not os.path.exists(chkpt_dir):
-        os.makedirs(chkpt_dir)
-    print("using Env's name:", args.env_name)
-    env, dim_info, action_bound = get_env(args.env_name, ep_len=args.episode_length, render_mode=args.render_mode)
-    print("dim_info:", dim_info)
-    if args.algorithm == 'MADDPG':
-        print("using algorithm: MADDPG")
-        agent = MADDPG(dim_info, args.buffer_capacity, args.batch_size, args.actor_lr, args.critic_lr, action_bound, _chkpt_dir = chkpt_dir, _device = device)
-    elif args.algorithm == 'MASAC':
-        print("using algorithm: MASAC")
-        alpha_lr = args.alpha_lr if args.alpha_lr is not None else 2e-4
-        agent = MASAC(dim_info, args.buffer_capacity, args.batch_size, args.actor_lr, args.critic_lr, alpha_lr, action_bound, _chkpt_dir = chkpt_dir, _device = device)  
-    elif args.algorithm == 'MATD3':
-        print("using algorithm: MATD3")
-        agent = MATD3(dim_info, args.buffer_capacity, args.batch_size, args.actor_lr, args.critic_lr, action_bound, _chkpt_dir = chkpt_dir, _device = device) 
-    elif args.algorithm == 'MAPPO':
-        print("using alogrthim: MAPPO")
-        agent = MAPPO(dim_info, args.buffer_capacity, args.batch_size, args.actor_lr, args.critic_lr, action_bound, _chkpt_dir = chkpt_dir, _device = device)
-    else:
-        raise ValueError(f"Unsupported algorithm: {args.algorithm}. Please choose from 'MADDPG', 'MASAC', 'MAPPO' or 'MATD3'.")
-    # 创建运行对象
-    if args.algorithm == 'MAPPO':
-        runner = MAPPO_RUNNER(agent, env, args, device, mode = 'train')
-    else:
-        runner = RUNNER(agent, env, args, device, mode = 'train')
-    runner.train()
-    end_time = time.time()
-    training_time = end_time - start_time
-    training_time_str = str(timedelta(seconds=int(training_time)))
-    print(f"\n===========训练完成!===========")
-    print(f"训练设备: {device}")
-    print(f"训练用时: {training_time_str}")
-
-
-    logger = TrainingLogger()
-    current_time = logger.save_training_log(args, device, training_time_str, runner)
-    print(f"完成时间: {current_time}")
-
-    print("--- saving trained models ---")
-    agent.save_model()
-    print("--- trained models saved ---")
+    args = parse_args()
+    train(args)
