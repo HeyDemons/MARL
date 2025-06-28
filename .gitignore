@@ -2,11 +2,11 @@
 wandb/
 
 # 忽略 logs 文件夹，无论它在哪里
-logs/
-runs/
 # 忽略 models 文件夹，无论它在哪里
 models/
-
+*.npy
+#忽略tensorboard保存的日志文件
+*.tfevents.*
 # 忽略所有以 .pth 结尾的文件，无论它在哪里
 *.pth
 data/
@@ -14,3 +14,5 @@ __pycache__/
 *.npy
 *.json
 *.txt
+*.zip
+project/
