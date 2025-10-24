@@ -28,8 +28,6 @@
 - `hw9` / `hw10`：多智能体算法实现与实验（MADDPG/MATD3/MASAC 等）
 - `hw910_and_pr1` / `pr1`：项目延伸与复现实验
 - `pr2`：CNN/结构化模型与训练脚本
-- `snake-ai-2`：贪吃蛇环境与智能体（含训练与测试）
-- `models`：模型文件
 
 每个子目录通常包含：
 - `train.py`：训练入口
@@ -61,9 +59,6 @@
   - `python hw8/main.py`
   - `python hw9/train.py` 或 `python hw9/run.py`
   - `python hw10/train.py` 或 `python hw10/run.py`
-- 贪吃蛇（`snake-ai-2`）：
-  - 训练：`python snake-ai-2/train.py`
-  - 演示：`python snake-ai-2/main.py`
 
 提示：多数脚本支持命令行参数，使用 `-h/--help` 查看可选项。
 
@@ -82,5 +77,4 @@
 - 若显存不足：降低网络规模、批大小或关闭视频记录。
 
 
-## 许可
-仅用于课程作业与学习复现用途，数据与第三方依赖遵循其各自许可协议。
+
